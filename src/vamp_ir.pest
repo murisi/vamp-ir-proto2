@@ -28,7 +28,7 @@ expr3 = { negate* ~ expr4 }
 
 expr4 = { expr5+ }
 
-expr5 = { "(" ~ expr ~ ")" | "fun" ~ pattern+ ~ "->" ~ expr | "try" ~ expr | "let" ~ letBinding ~ "in" ~ expr | valueName | constant }
+expr5 = { "(" ~ expr ~ ")" | "fun" ~ pattern+ ~ "->" ~ expr | "let" ~ letBinding ~ "in" ~ expr | valueName | constant }
 
 negate = { "-" }
 

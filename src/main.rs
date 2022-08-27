@@ -209,7 +209,6 @@ pub enum Expression {
     Constant(i32),
     Variable(Variable),
     Function(Function),
-    Try(Box<Expression>),
     LetBinding(LetBinding, Box<Expression>),
 }
 
@@ -310,9 +309,6 @@ impl Expression {
                 params.push(param);
             }
             Some(Self::Function(Function(params, Box::new(body))))
-        } else if string.starts_with("try") {
-            let body = Self::parse(pair).expect("expression should contain expression");
-            Some(Self::Try(Box::new(body)))
         } else if string.starts_with("let") {
             let body = Self::parse(pair).expect("expression should end with expression");
             let pair = pairs.next().expect("body expression should be prefixed by binding");
@@ -361,7 +357,6 @@ impl fmt::Display for Expression {
                 }
                 write!(f, " -> {}", fun.1)?;
             },
-            Self::Try(expr) => write!(f, "try {}", expr)?,
             Self::LetBinding(binding, expr) => write!(f, "let {} in {}", binding, expr)?,
         }
         Ok(())
