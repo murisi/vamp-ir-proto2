@@ -301,14 +301,7 @@ impl Expression {
         } else if string.starts_with("(") {
             Self::parse(pair)
         } else if string.starts_with("fun") {
-            let body = Self::parse(pair).expect("expression should end with expression");
-            let mut params = vec![];
-            while let Some(pair) = pairs.next() {
-                let param =
-                    Pattern::parse(pair).expect("all prefixes to expression should be patterns");
-                params.push(param);
-            }
-            Some(Self::Function(Function(params, Box::new(body))))
+            Function::parse(pair).map(Self::Function)
         } else if string.starts_with("let") {
             let body = Self::parse(pair).expect("expression should end with expression");
             let pair = pairs.next().expect("body expression should be prefixed by binding");
@@ -350,13 +343,7 @@ impl fmt::Display for Expression {
             Self::Application(expr1, expr2) => write!(f, "{} {}", expr1, expr2)?,
             Self::Constant(val) => write!(f, "{}", val)?,
             Self::Variable(var) => write!(f, "{}", var)?,
-            Self::Function(fun) => {
-                write!(f, "fun {}", fun.0[0])?;
-                for pat in &fun.0[1..] {
-                    write!(f, " {}", pat)?;
-                }
-                write!(f, " -> {}", fun.1)?;
-            },
+            Self::Function(fun) => write!(f, "{}", fun)?,
             Self::LetBinding(binding, expr) => write!(f, "let {} in {}", binding, expr)?,
         }
         Ok(())
@@ -420,6 +407,33 @@ impl fmt::Display for Variable {
 
 #[derive(Debug, Clone)]
 pub struct Function(Vec<Pattern>, Box<Expression>);
+
+impl Function {
+    pub fn parse(pair: Pair<Rule>) -> Option<Self> {
+        if pair.as_rule() != Rule::function { return None }
+        let mut pairs = pair.into_inner();
+        let pair = pairs.next_back().expect("function should not be empty");
+        let body = Expression::parse(pair).expect("function should end with expression");
+        let mut params = vec![];
+        while let Some(pair) = pairs.next() {
+            let param =
+                Pattern::parse(pair).expect("all prefixes to function should be patterns");
+            params.push(param);
+        }
+        Some(Self(params, Box::new(body)))
+    }
+}
+
+impl fmt::Display for Function {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "fun {}", self.0[0])?;
+        for pat in &self.0[1..] {
+            write!(f, " {}", pat)?;
+        }
+        write!(f, " -> {}", self.1)?;
+        Ok(())
+    }
+}
 
 fn main() {
     println!("Hello, world!");
