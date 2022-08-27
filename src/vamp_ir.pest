@@ -1,0 +1,38 @@
+WHITESPACE = _{ " " | "\t" | NEWLINE }
+
+lowercaseIdent = @{ (ASCII_ALPHA_LOWER | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+
+valueName = { lowercaseIdent }
+
+infixOp = { "/" | "*" | "+" | "-" | "=" | "!=" }
+
+integerLiteral = @{ "-"? ~ ("0" | ASCII_NONZERO_DIGIT ~ ASCII_DIGIT*) }
+
+constant = { integerLiteral | "(" ~ ")" }
+
+pattern = { pattern1 ~ ( "as" ~ valueName )* }
+
+pattern1 = { pattern2 ~ ( "," ~ pattern2 )* }
+
+pattern2 = { valueName | constant | "(" ~ pattern ~ ")" }
+
+letBinding = { pattern ~ "=" ~ expr | valueName ~ pattern* ~ "=" ~ expr }
+
+expr = { expr1 ~ ( ";" ~ expr1 )* }
+
+expr1 = { expr2 ~ ( "," ~ expr2 )* }
+
+expr2 = { expr3 ~ ( infixOp ~ expr3 )* }
+
+expr3 = { negate* ~ expr4 }
+
+expr4 = { expr5+ }
+
+expr5 = { valueName | constant | "(" ~ expr ~ ")" | "fun" ~ pattern+ ~ "->" ~ expr | "try" ~ expr | "let" ~ letBinding ~ "in" ~ expr }
+
+negate = { "-" }
+
+definition = { "let" ~ letBinding }
+
+moduleItems = _{ SOI ~ ";;"* ~ ( definition | expr ) ~ ( ( ";;"* ~ definition ) | ( ";;"+ ~ expr ) )* ~ ";;"* ~ EOI }
+
