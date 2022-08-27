@@ -74,10 +74,7 @@ impl fmt::Display for Definition {
 }
 
 #[derive(Debug, Clone)]
-pub enum LetBinding {
-    Value(Pattern, Box<Expression>),
-    Function(Variable, Function),
-}
+pub struct LetBinding(Pattern, Box<Expression>);
 
 impl LetBinding {
     pub fn parse(pair: Pair<Rule>) -> Option<Self> {
@@ -95,11 +92,12 @@ impl LetBinding {
                         .expect("expected RHS to be a product");
                     pats.push(rhs);
                 }
-                Some(Self::Function(name, Function(pats, Box::new(expr))))
+                let expr = Box::new(Expression::Function(Function(pats, Box::new(expr))));
+                Some(Self(Pattern::Variable(name), expr))
             },
             Rule::pattern => {
                 let pat = Pattern::parse(pair).expect("pattern should start with pattern");
-                Some(Self::Value(pat, Box::new(expr)))
+                Some(Self(pat, Box::new(expr)))
             },
             _ => unreachable!("let binding is of unknown form")
         }
@@ -108,16 +106,16 @@ impl LetBinding {
 
 impl fmt::Display for LetBinding {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Value(pat, expr) => write!(f, "{} = {}", pat, expr)?,
-            Self::Function(var, fun) => {
-                write!(f, "{}", var)?;
+        match &*self.1 {
+            Expression::Function(fun) => {
+                write!(f, "{}", self.0)?;
                 for pat in &fun.0 {
                     write!(f, " {}", pat)?;
                 }
                 write!(f, " = {}", fun.1)?;
-            }
-        }
+            },
+            _ => write!(f, "{} = {}", self.0, self.1)?,
+        };
         Ok(())
     }
 }
