@@ -3,6 +3,7 @@ extern crate pest;
 extern crate pest_derive;
 use pest::Parser;
 use pest::iterators::Pair;
+use std::fmt;
 
 #[derive(Parser)]
 #[grammar = "vamp_ir.pest"]
@@ -40,6 +41,18 @@ impl Module {
     }
 }
 
+impl fmt::Display for Module {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for def in &self.defs {
+            writeln!(f, "{};;", def)?;
+        }
+        for expr in &self.exprs {
+            writeln!(f, "{};;", expr)?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Definition(LetBinding);
 
@@ -50,6 +63,13 @@ impl Definition {
         let pair = pairs.next().expect("definition should have a single let binding");
         let binding = LetBinding::parse(pair).expect("definition should contain single binding");
         Some(Self(binding))
+    }
+}
+
+impl fmt::Display for Definition {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "let {}", self.0)?;
+        Ok(())
     }
 }
 
@@ -83,6 +103,22 @@ impl LetBinding {
             },
             _ => unreachable!("let binding is of unknown form")
         }
+    }
+}
+
+impl fmt::Display for LetBinding {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Value(pat, expr) => write!(f, "{} = {}", pat, expr)?,
+            Self::Function(var, fun) => {
+                write!(f, "{}", var)?;
+                for pat in &fun.0 {
+                    write!(f, " {}", pat)?;
+                }
+                write!(f, " = {}", fun.1)?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -138,6 +174,28 @@ impl Pattern {
             Rule::pattern => Self::parse(pair),
             _ => unreachable!("pattern is of unknown form")
         }
+    }
+}
+
+impl fmt::Display for Pattern {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::As(pat, name) => write!(f, "{} as {}", pat, name)?,
+            Self::Product(pats) => {
+                let mut iter = pats.iter();
+                if let Some(pat) = iter.next() {
+                    write!(f, "{}", pat)?;
+                    while let Some(pat) = iter.next() {
+                        write!(f, ", {}", pat)?;
+                    }
+                } else {
+                    write!(f, "()")?;
+                }
+            },
+            Self::Variable(var) => write!(f, "{}", var)?,
+            Self::Constant(val) => write!(f, "{}", val)?,
+        }
+        Ok(())
     }
 }
 
@@ -266,6 +324,50 @@ impl Expression {
     }
 }
 
+impl fmt::Display for Expression {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Sequence(exprs) => {
+                let mut iter = exprs.iter();
+                if let Some(expr) = iter.next() {
+                    write!(f, "{}", expr)?;
+                    if let Some(expr) = iter.next() {
+                        write!(f, "; {}", expr)?;
+                    }
+                } else {
+                    write!(f, "()")?;
+                }
+            },
+            Self::Product(exprs) => {
+                let mut iter = exprs.iter();
+                if let Some(expr) = iter.next() {
+                    write!(f, "{}", expr)?;
+                    if let Some(expr) = iter.next() {
+                        write!(f, ", {}", expr)?;
+                    }
+                } else {
+                    write!(f, "()")?;
+                }
+            },
+            Self::Infix(op, expr1, expr2) => write!(f, "({}{}{})", expr1, op, expr2)?,
+            Self::Negate(expr) => write!(f, "-{}", expr)?,
+            Self::Application(expr1, expr2) => write!(f, "{} {}", expr1, expr2)?,
+            Self::Constant(val) => write!(f, "{}", val)?,
+            Self::Variable(var) => write!(f, "{}", var)?,
+            Self::Function(fun) => {
+                write!(f, "fun {}", fun.0[0])?;
+                for pat in &fun.0[1..] {
+                    write!(f, " {}", pat)?;
+                }
+                write!(f, " -> {}", fun.1)?;
+            },
+            Self::Try(expr) => write!(f, "try {}", expr)?,
+            Self::LetBinding(binding, expr) => write!(f, "let {} in {}", binding, expr)?,
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum InfixOp {
     Divide,
@@ -291,7 +393,20 @@ impl InfixOp {
     }
 }
 
-#[derive(Debug, Clone)]
+impl fmt::Display for InfixOp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Divide => write!(f, "/"),
+            Self::Multiply => write!(f, "*"),
+            Self::Add => write!(f, "+"),
+            Self::Subtract => write!(f, "-"),
+            Self::Equal => write!(f, "="),
+            Self::NotEqual => write!(f, "!="),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct Variable(String);
 
 impl Variable {
@@ -301,11 +416,18 @@ impl Variable {
     }
 }
 
+impl fmt::Display for Variable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)?;
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Function(Vec<Pattern>, Box<Expression>);
 
 fn main() {
     println!("Hello, world!");
-    let unsuccessful_parse = Module::parse(";; let aa = bb;;");
-    println!("{:?}", unsuccessful_parse);
+    let unsuccessful_parse = Module::parse(";; let aa = fun x y -> x + y;;");
+    println!("{}", unsuccessful_parse.unwrap());
 }
