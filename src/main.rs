@@ -213,18 +213,21 @@ pub enum Expression {
 impl Expression {
     pub fn parse(pair: Pair<Rule>) -> Option<Self> {
         if pair.as_rule() != Rule::expr { return None }
+        let string = pair.as_str();
         let mut pairs = pair.into_inner();
-        let pair = pairs.next().expect("expression should not be empty");
-        let mut exprs =
-            vec![Self::parse_expr1(pair).expect("expression should start with product")];
-        while let Some(pair) = pairs.next() {
-            let rhs = Self::parse_expr1(pair)
-                .expect("expected RHS to be a product");
-            exprs.push(rhs);
+        let pair = pairs.next_back().expect("expression should not be empty");
+        if string.starts_with("fun") {
+            Function::parse(pair).map(Self::Function)
+        } else if string.starts_with("let") {
+            let body = Self::parse(pair).expect("expression should end with expression");
+            let pair = pairs.next().expect("body expression should be prefixed by binding");
+            let binding = LetBinding::parse(pair).expect("expression should start with binding");
+            Some(Self::LetBinding(binding, Box::new(body)))
+        } else {
+            Self::parse_expr1(pair)
         }
-        Some(if exprs.len() == 1 { exprs[0].clone() } else { Self::Sequence(exprs) })
     }
-
+    
     pub fn parse_expr1(pair: Pair<Rule>) -> Option<Self> {
         if pair.as_rule() != Rule::expr1 { return None }
         let mut pairs = pair.into_inner();
@@ -236,31 +239,45 @@ impl Expression {
                 .expect("expected RHS to be a product");
             exprs.push(rhs);
         }
-        Some(if exprs.len() == 1 { exprs[0].clone() } else { Self::Product(exprs) })
+        Some(if exprs.len() == 1 { exprs[0].clone() } else { Self::Sequence(exprs) })
     }
 
     pub fn parse_expr2(pair: Pair<Rule>) -> Option<Self> {
         if pair.as_rule() != Rule::expr2 { return None }
         let mut pairs = pair.into_inner();
         let pair = pairs.next().expect("expression should not be empty");
+        let mut exprs =
+            vec![Self::parse_expr3(pair).expect("expression should start with product")];
+        while let Some(pair) = pairs.next() {
+            let rhs = Self::parse_expr3(pair)
+                .expect("expected RHS to be a product");
+            exprs.push(rhs);
+        }
+        Some(if exprs.len() == 1 { exprs[0].clone() } else { Self::Product(exprs) })
+    }
+
+    pub fn parse_expr3(pair: Pair<Rule>) -> Option<Self> {
+        if pair.as_rule() != Rule::expr3 { return None }
+        let mut pairs = pair.into_inner();
+        let pair = pairs.next().expect("expression should not be empty");
         let mut expr =
-            Self::parse_expr3(pair).expect("expression should start with product");
+            Self::parse_expr4(pair).expect("expression should start with product");
         while let Some(pair) = pairs.next() {
             let op = InfixOp::parse(pair).expect("expected arithmetic operator");
             let rhs_pair = pairs.next().expect("expected RHS product");
-            let rhs = Self::parse_expr3(rhs_pair)
+            let rhs = Self::parse_expr4(rhs_pair)
                 .expect("expected RHS to be a product");
             expr = Self::Infix(op, Box::new(expr), Box::new(rhs));
         }
         Some(expr)
     }
 
-    pub fn parse_expr3(pair: Pair<Rule>) -> Option<Self> {
-        if pair.as_rule() != Rule::expr3 { return None }
+    pub fn parse_expr4(pair: Pair<Rule>) -> Option<Self> {
+        if pair.as_rule() != Rule::expr4 { return None }
         let mut pairs = pair.into_inner();
         let pair = pairs.next_back().expect("expression should not be empty");
         let mut expr =
-            Self::parse_expr4(pair).expect("expression should start with product");
+            Self::parse_expr5(pair).expect("expression should start with product");
         while let Some(pair) = pairs.next_back() {
             if pair.as_rule() == Rule::negate {
                 expr = Expression::Negate(Box::new(expr));
@@ -271,22 +288,22 @@ impl Expression {
         Some(expr)
     }
 
-    pub fn parse_expr4(pair: Pair<Rule>) -> Option<Self> {
-        if pair.as_rule() != Rule::expr4 { return None }
+    pub fn parse_expr5(pair: Pair<Rule>) -> Option<Self> {
+        if pair.as_rule() != Rule::expr5 { return None }
         let mut pairs = pair.into_inner();
         let pair = pairs.next().expect("expression should not be empty");
         let mut expr =
-            Self::parse_expr5(pair).expect("expression should start with product");
+            Self::parse_expr6(pair).expect("expression should start with product");
         while let Some(pair) = pairs.next() {
-            let rhs = Self::parse_expr5(pair)
+            let rhs = Self::parse_expr6(pair)
                 .expect("expected RHS to be a product");
             expr = Expression::Application(Box::new(expr), Box::new(rhs));
         }
         Some(expr)
     }
 
-    pub fn parse_expr5(pair: Pair<Rule>) -> Option<Self> {
-        if pair.as_rule() != Rule::expr5 { return None }
+    pub fn parse_expr6(pair: Pair<Rule>) -> Option<Self> {
+        if pair.as_rule() != Rule::expr6 { return None }
         let string = pair.as_str();
         let mut pairs = pair.into_inner();
         let pair = pairs.next_back().expect("expression should not be empty");
@@ -298,13 +315,6 @@ impl Expression {
             Some(Self::Variable(name))
         } else if string.starts_with("(") {
             Self::parse(pair)
-        } else if string.starts_with("fun") {
-            Function::parse(pair).map(Self::Function)
-        } else if string.starts_with("let") {
-            let body = Self::parse(pair).expect("expression should end with expression");
-            let pair = pairs.next().expect("body expression should be prefixed by binding");
-            let binding = LetBinding::parse(pair).expect("expression should start with binding");
-            Some(Self::LetBinding(binding, Box::new(body)))
         } else {
             unreachable!("expression is of unknown form")
         }
@@ -435,6 +445,6 @@ impl fmt::Display for Function {
 
 fn main() {
     println!("Hello, world!");
-    let unsuccessful_parse = Module::parse(";; let aa = fun x y -> x + y;;");
+    let unsuccessful_parse = Module::parse(";; let aa = fun x y -> let a = 5 in x + y;;");
     println!("{}", unsuccessful_parse.unwrap());
 }

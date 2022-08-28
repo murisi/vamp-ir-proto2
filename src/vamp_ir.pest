@@ -2,7 +2,9 @@ WHITESPACE = _{ " " | "\t" | NEWLINE }
 
 lowercaseIdent = @{ (ASCII_ALPHA_LOWER | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 
-valueName = { lowercaseIdent }
+keyword = { "in" | "let" | "fun" }
+
+valueName = { !keyword ~ lowercaseIdent }
 
 infixOp = { "/" | "*" | "+" | "-" | "=" | "!=" }
 
@@ -18,17 +20,19 @@ pattern2 = { valueName | constant | "(" ~ pattern ~ ")" }
 
 letBinding = { pattern ~ "=" ~ expr | valueName ~ pattern* ~ "=" ~ expr }
 
-expr = { expr1 ~ ( ";" ~ expr1 )* }
+expr = { function | "let" ~ letBinding ~ "in" ~ expr | expr1 }
 
-expr1 = { expr2 ~ ( "," ~ expr2 )* }
+expr1 = { expr2 ~ ( ";" ~ expr2 )* }
 
-expr2 = { expr3 ~ ( infixOp ~ expr3 )* }
+expr2 = { expr3 ~ ( "," ~ expr3 )* }
 
-expr3 = { negate* ~ expr4 }
+expr3 = { expr4 ~ ( infixOp ~ expr4 )* }
 
-expr4 = { expr5+ }
+expr4 = { negate* ~ expr5 }
 
-expr5 = { "(" ~ expr ~ ")" | function | "let" ~ letBinding ~ "in" ~ expr | valueName | constant }
+expr5 = { expr6+ }
+
+expr6 = { "(" ~ expr ~ ")" | valueName | constant }
 
 function = { "fun" ~ pattern+ ~ "->" ~ expr }
 
