@@ -8,7 +8,7 @@ valueName = { !keyword ~ lowercaseIdent }
 
 infixOp = { "/" | "*" | "+" | "-" | "=" | "!=" }
 
-integerLiteral = @{ "-"? ~ ("0" | ASCII_NONZERO_DIGIT ~ ASCII_DIGIT*) }
+integerLiteral = @{ "0" | ASCII_NONZERO_DIGIT ~ ASCII_DIGIT* }
 
 constant = { integerLiteral | "(" ~ ")" }
 
@@ -28,7 +28,7 @@ expr2 = { expr3 ~ ( "," ~ expr3 )* }
 
 expr3 = { expr4 ~ ( infixOp ~ expr4 )* }
 
-expr4 = { negate* ~ expr5 }
+expr4 = { "(" ~ negate* ~ expr5 ~ ")" | expr5 }
 
 expr5 = { expr6+ }
 
