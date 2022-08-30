@@ -4,7 +4,7 @@ extern crate pest_derive;
 use std::collections::HashMap;
 mod ast;
 use std::fs;
-use crate::ast::{Module, Definition, Expression, Pattern, VariableId, LetBinding};
+use crate::ast::{Module, Definition, Expression, Pattern, VariableId, LetBinding, Variable};
 
 /* A structure for generating unique variable IDs. */
 struct VarGen(VariableId);
@@ -22,7 +22,7 @@ impl VarGen {
 
 /* Replaces variable IDs in the given expression according to the given
  * substitution map. */
-fn substitute_expr_variables(
+fn refresh_expr_variables(
     expr: &mut Expression,
     map: &HashMap<VariableId, VariableId>,
     gen: &mut VarGen,
@@ -30,24 +30,24 @@ fn substitute_expr_variables(
     match expr {
         Expression::Sequence(exprs) => {
             for expr in exprs {
-                substitute_expr_variables(expr, map, gen);
+                refresh_expr_variables(expr, map, gen);
             }
         },
         Expression::Product(exprs) => {
             for expr in exprs {
-                substitute_expr_variables(expr, map, gen);
+                refresh_expr_variables(expr, map, gen);
             }
         },
         Expression::Infix(_, expr1, expr2) => {
-            substitute_expr_variables(expr1, map, gen);
-            substitute_expr_variables(expr2, map, gen);
+            refresh_expr_variables(expr1, map, gen);
+            refresh_expr_variables(expr2, map, gen);
         },
         Expression::Negate(expr) => {
-            substitute_expr_variables(expr, map, gen);
+            refresh_expr_variables(expr, map, gen);
         },
         Expression::Application(expr1, expr2) => {
-            substitute_expr_variables(expr1, map, gen);
-            substitute_expr_variables(expr2, map, gen);
+            refresh_expr_variables(expr1, map, gen);
+            refresh_expr_variables(expr2, map, gen);
         },
         Expression::Constant(_) => {},
         Expression::Variable(var) => {
@@ -60,13 +60,13 @@ fn substitute_expr_variables(
             for param in &mut fun.0 {
                 refresh_pattern_variables(param, &mut map, gen);
             }
-            substitute_expr_variables(&mut fun.1, &map, gen);
+            refresh_expr_variables(&mut fun.1, &map, gen);
         },
         Expression::LetBinding(binding, expr) => {
-            substitute_expr_variables(&mut binding.1, map, gen);
+            refresh_expr_variables(&mut binding.1, map, gen);
             let mut map = map.clone();
             refresh_pattern_variables(&mut binding.0, &mut map, gen);
-            substitute_expr_variables(expr, &map, gen);
+            refresh_expr_variables(expr, &map, gen);
         },
     }
 }
@@ -76,21 +76,37 @@ fn match_pattern_expr(
     pat: &Pattern,
     expr: &Expression,
     map: &mut HashMap<VariableId, Expression>,
+    gen: &mut VarGen,
 ) {
     match (pat, expr) {
-        (Pattern::As(pat, var), _) => {
-            match_pattern_expr(pat, expr, map);
+        (pat, Expression::Variable(var)) if map.contains_key(&var.id) =>
+            match_pattern_expr(pat, &map[&var.id].clone(), map, gen),
+        (Pattern::As(pat, var), expr) => {
+            match_pattern_expr(pat, expr, map, gen);
+            map.insert(var.id, expr.clone());
+        },
+        (Pattern::Variable(var), expr) => {
             map.insert(var.id, expr.clone());
         },
         (Pattern::Product(pats), Expression::Product(exprs))
             if pats.len() == exprs.len() =>
         {
             for (pat, expr) in pats.iter().zip(exprs.iter()) {
-                match_pattern_expr(pat, expr, map);
+                match_pattern_expr(pat, expr, map, gen);
             }
         },
-        (Pattern::Variable(var), _) => {
-            map.insert(var.id, expr.clone());
+        (Pattern::Product(pats), Expression::Variable(var)) => {
+            let mut inner_exprs = vec![];
+            for idx in 0..pats.len() {
+                let mut new_var = Variable::new(gen.generate_id());
+                // Derive component name from parent if possible
+                if let Some(name) = &var.name {
+                    new_var.name = Some(name.clone() + "." + &idx.to_string());
+                }
+                inner_exprs.push(Expression::Variable(new_var));
+            }
+            map.insert(var.id, Expression::Product(inner_exprs));
+            match_pattern_expr(pat, expr, map, gen);
         },
         (Pattern::Constant(a), Expression::Constant(b)) if a == b => {},
         _ => panic!("unable to match {} against {}", expr, pat),
@@ -243,7 +259,8 @@ fn number_module_variables(
 }
 
 /* Replace each function application occuring in the expression with a let
- * binding containing an inlined body. */
+ * binding containing an inlined body. Returns a normal form of the expression.
+ */
 fn apply_functions(
     expr: &mut Expression,
     bindings: &HashMap<VariableId, Expression>,
@@ -266,7 +283,7 @@ fn apply_functions(
                 },
                 Expression::Function(_) => {
                     let substitutions = HashMap::new();
-                    substitute_expr_variables(expr1, &substitutions, gen);
+                    refresh_expr_variables(expr1, &substitutions, gen);
                     if let Expression::Function(fun) = &mut **expr1 {
                         if fun.0.is_empty() {
                             unreachable!("functions should have at least one parameter");
@@ -311,7 +328,7 @@ fn apply_functions(
         Expression::LetBinding(binding, body) => {
             let val = apply_functions(&mut *binding.1, bindings, gen);
             let mut bindings = bindings.clone();
-            match_pattern_expr(&binding.0, &val, &mut bindings);
+            match_pattern_expr(&binding.0, &val, &mut bindings, gen);
             apply_functions(body, &bindings, gen)
         },
         Expression::Sequence(seq) => {
@@ -319,11 +336,7 @@ fn apply_functions(
             for expr in seq {
                 val = Some(apply_functions(expr, &bindings, gen));
             }
-            if let Some(val) = val {
-                val
-            } else {
-                unreachable!("encountered an empty sequence")
-            }
+            val.expect("encountered empty sequence")
         },
         Expression::Product(prod) => {
             let mut vals = vec![];
@@ -360,7 +373,7 @@ fn apply_def_functions(
     gen: &mut VarGen,
 ) {
     let val = apply_functions(&mut def.0.1, bindings, gen);
-    match_pattern_expr(&def.0.0, &val, bindings);
+    match_pattern_expr(&def.0.0, &val, bindings, gen);
 }
 
 /* Replace each function application occuring in the module with a let
@@ -378,6 +391,207 @@ fn apply_module_functions(
     }
 }
 
+/* Try to determine the internal structure of variables by unifying all patterns
+ * with their corresponding expressions. */
+fn elaborate_variables(
+    expr: &Expression,
+    map: &mut HashMap<VariableId, Expression>,
+    gen: &mut VarGen,
+) -> Expression {
+    match expr {
+        Expression::LetBinding(binding, body) => {
+            let val = elaborate_variables(&*binding.1, map, gen);
+            match_pattern_expr(&binding.0, &val, map, gen);
+            elaborate_variables(body, map, gen)
+        },
+        Expression::Sequence(seq) => {
+            let mut val = None;
+            for expr in seq {
+                val = Some(elaborate_variables(expr, map, gen))
+            }
+            val.expect("encountered empty sequence")
+        },
+        Expression::Product(prod) => {
+            let mut vals = vec![];
+            for expr in prod {
+                vals.push(elaborate_variables(expr, map, gen));
+            }
+            Expression::Product(vals)
+        },
+        Expression::Infix(op, expr1, expr2) => {
+            let expr1 = elaborate_variables(expr1, map, gen);
+            let expr2 = elaborate_variables(expr2, map, gen);
+            Expression::Infix(*op, Box::new(expr1.clone()), Box::new(expr2.clone()))
+        },
+        Expression::Negate(expr1) => {
+            Expression::Negate(Box::new(elaborate_variables(expr1, map, gen)))
+        },
+        Expression::Variable(var) if map.contains_key(&var.id) => {
+            elaborate_variables(&map[&var.id].clone(), map, gen)
+        },
+        Expression::Function(_) | Expression::Constant(_) |
+        Expression::Variable(_) => expr.clone(),
+        Expression::Application(_, _) => {
+            unreachable!("cannot elaborate variable values before inlining");
+        }
+    }
+}
+
+/* Try to determine the internal structure of variables by unifying all patterns
+ * with their corresponding expressions. */
+fn elaborate_def_variables(
+    def: &Definition,
+    map: &mut HashMap<VariableId, Expression>,
+    gen: &mut VarGen,
+) {
+    let val = elaborate_variables(&*def.0.1, map, gen);
+    match_pattern_expr(&def.0.0, &val, map, gen);
+}
+
+/* Try to determine the internal structure of variables by unifying all patterns
+ * with their corresponding expressions. */
+fn elaborate_module_variables(
+    module: &Module,
+    map: &mut HashMap<VariableId, Expression>,
+    gen: &mut VarGen,
+) {
+    for def in &module.defs {
+        elaborate_def_variables(def, map, gen);
+    }
+    for expr in &module.exprs {
+        elaborate_variables(expr, map, gen);
+    }
+}
+
+/* Substitute variables into the pattern according to the map. */
+fn substitute_pattern_variables(
+    pat: &mut Pattern,
+    pat_map: &HashMap<VariableId, Pattern>,
+) {
+    match pat {
+        Pattern::Variable(var) if pat_map.contains_key(&var.id) => {
+            *pat = pat_map[&var.id].clone();
+            substitute_pattern_variables(pat, pat_map);
+        },
+        Pattern::Product(prod) => {
+            for pat in prod {
+                substitute_pattern_variables(pat, pat_map);
+            }
+        },
+        Pattern::As(pat, _) => {
+            substitute_pattern_variables(pat, pat_map);
+        },
+        Pattern::Variable(_) | Pattern::Constant(_) => {},
+    }
+}
+
+/* Substitute variables into the expression according to the map. */
+fn substitute_expr_variables(
+    expr: &mut Expression,
+    pat_map: &HashMap<VariableId, Pattern>,
+    expr_map: &HashMap<VariableId, Expression>,
+) {
+    match expr {
+        Expression::Variable(var) if expr_map.contains_key(&var.id) => {
+            *expr = expr_map[&var.id].clone();
+            substitute_expr_variables(expr, pat_map, expr_map);
+        },
+        Expression::Product(prod) => {
+            for expr in prod {
+                substitute_expr_variables(expr, pat_map, expr_map);
+            }
+        },
+        Expression::Sequence(seq) => {
+            for expr in seq {
+                substitute_expr_variables(expr, pat_map, expr_map);
+            }
+        },
+        Expression::Infix(_, expr1, expr2) => {
+            substitute_expr_variables(expr1, pat_map, expr_map);
+            substitute_expr_variables(expr2, pat_map, expr_map);
+        },
+        Expression::Application(expr1, expr2) => {
+            substitute_expr_variables(expr1, pat_map, expr_map);
+            substitute_expr_variables(expr2, pat_map, expr_map);
+        },
+        Expression::Negate(expr1) => {
+            substitute_expr_variables(expr1, pat_map, expr_map);
+        },
+        Expression::LetBinding(binding, body) => {
+            substitute_expr_variables(&mut binding.1, pat_map, expr_map);
+            substitute_pattern_variables(&mut binding.0, pat_map);
+            substitute_expr_variables(body, pat_map, expr_map);
+        },
+        Expression::Function(fun) => {
+            for pat in &mut fun.0 {
+                substitute_pattern_variables(pat, pat_map);
+            }
+            substitute_expr_variables(&mut fun.1, pat_map, expr_map);
+        },
+        Expression::Variable(_) | Expression::Constant(_) => {}
+    }
+}
+
+/* Substitute variables into the definition according to the map. */
+fn substitute_def_variables(
+    def: &mut Definition,
+    pat_map: &HashMap<VariableId, Pattern>,
+    expr_map: &HashMap<VariableId, Expression>,
+) {
+    substitute_expr_variables(&mut *def.0.1, pat_map, expr_map);
+    substitute_pattern_variables(&mut def.0.0, pat_map);
+}
+
+/* Substitute variables into the module according to the map. */
+fn substitute_module_variables(
+    module: &mut Module,
+    pat_map: &HashMap<VariableId, Pattern>,
+    expr_map: &HashMap<VariableId, Expression>,
+) {
+    for def in &mut module.defs {
+        substitute_def_variables(def, pat_map, expr_map);
+    }
+    for expr in &mut module.exprs {
+        substitute_expr_variables(expr, pat_map, expr_map);
+    }
+}
+
+/* Generate a pattern that will match the given expression modulo the specific
+ * constants inside it. */
+fn generate_pattern_exprs(
+    expr: &Expression,
+    map: &HashMap<VariableId, Expression>,
+    gen: &mut VarGen,
+) -> (Pattern, Expression) {
+    
+    match expr {
+        Expression::Variable(var) if map.contains_key(&var.id) => {
+            generate_pattern_exprs(&map[&var.id], map, gen)
+        },
+        Expression::Variable(var) => {
+            let mut new_var = Variable::new(gen.generate_id());
+            new_var.name = var.name.clone();
+            (Pattern::Variable(new_var.clone()), Expression::Variable(new_var))
+        },
+        Expression::Function(_) | Expression::Infix(_, _, _) |
+        Expression::Constant(_) | Expression::Negate(_) => {
+            let var = Variable::new(gen.generate_id());
+            (Pattern::Variable(var.clone()), Expression::Variable(var))
+        },
+        Expression::Product(prod) => {
+            let mut pats = vec![];
+            let mut exprs = vec![];
+            for expr in prod {
+                let (pat, expr) = generate_pattern_exprs(expr, map, gen);
+                pats.push(pat);
+                exprs.push(expr);
+            }
+            (Pattern::Product(pats), Expression::Product(exprs))
+        },
+        _ => unreachable!("unexpected normalized expression"),
+    }
+}
+
 fn main() {
     let args: Vec<_> = std::env::args().collect();
     if args.len() < 2 {
@@ -388,5 +602,15 @@ fn main() {
     let mut vg = VarGen::new();
     number_module_variables(&mut module, &mut vg);
     apply_module_functions(&mut module, &mut vg);
+    let mut map = HashMap::new();
+    elaborate_module_variables(&module, &mut map, &mut vg);
+    let mut expr_map = HashMap::new();
+    let mut pat_map = HashMap::new();
+    for (var, expr) in &map {
+        let (pat, expr) = generate_pattern_exprs(&expr, &map, &mut vg);
+        expr_map.insert(*var, expr);
+        pat_map.insert(*var, pat);
+    }
+    substitute_module_variables(&mut module, &pat_map, &expr_map);
     println!("{}", module);
 }

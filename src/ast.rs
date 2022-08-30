@@ -185,14 +185,14 @@ impl fmt::Display for Pattern {
             Self::As(pat, name) => write!(f, "{} as {}", pat, name)?,
             Self::Product(pats) => {
                 let mut iter = pats.iter();
+                write!(f, "(")?;
                 if let Some(pat) = iter.next() {
                     write!(f, "{}", pat)?;
                     while let Some(pat) = iter.next() {
                         write!(f, ", {}", pat)?;
                     }
-                } else {
-                    write!(f, "()")?;
                 }
+                write!(f, ")")?;
             },
             Self::Variable(var) => write!(f, "{}", var)?,
             Self::Constant(val) => write!(f, "{}", val)?,
@@ -342,14 +342,14 @@ impl fmt::Display for Expression {
             },
             Self::Product(exprs) => {
                 let mut iter = exprs.iter();
+                write!(f, "(")?;
                 if let Some(expr) = iter.next() {
                     write!(f, "{}", expr)?;
                     while let Some(expr) = iter.next() {
                         write!(f, ", {}", expr)?;
                     }
-                } else {
-                    write!(f, "()")?;
                 }
+                write!(f, ")")?;
             },
             Self::Infix(op, expr1, expr2) => write!(f, "({}{}{})", expr1, op, expr2)?,
             Self::Negate(expr) => write!(f, "-{}", expr)?,
@@ -372,7 +372,7 @@ impl fmt::Display for Expression {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum InfixOp {
     Divide,
     Multiply,
@@ -419,6 +419,10 @@ pub struct Variable {
 }
 
 impl Variable {
+    pub fn new(id: VariableId) -> Self {
+        Self { id, name: None }
+    }
+    
     pub fn parse(pair: Pair<Rule>) -> Option<Self> {
         if pair.as_rule() != Rule::valueName { return None }
         Some(Self{name: Some(pair.as_str().to_string()), id: 0 })

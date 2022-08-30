@@ -9,10 +9,11 @@ let bool x = x*(x-1) = 0;;
 
 let map f (a,b,c,d) =
     f a;
+    (let y,z = b in 5);
     f b;
     f c;
     f d;;
 
-map bool (5, 6, 7, 8);;
+map bool c;;
 
 fun f -> f a;;
