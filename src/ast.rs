@@ -71,7 +71,7 @@ impl fmt::Display for Definition {
             body = body.replace("\n", "\n    ");
             write!(f, "let {} =\n    {}", self.0.0, body)?
         } else {
-            write!(f, "let {} in {}", self.0.0, body)?
+            write!(f, "let {} = {}", self.0.0, body)?
         }
         Ok(())
     }
@@ -318,7 +318,8 @@ impl Expression {
         } else if pair.as_rule() == Rule::valueName {
             let name = Variable::parse(pair).expect("expression should be value name");
             Some(Self::Variable(name))
-        } else if string.starts_with("(") {
+        } else if string.starts_with("(") || string.starts_with("fun") |
+        string.starts_with("let") {
             Self::parse(pair)
         } else {
             unreachable!("expression is of unknown form")

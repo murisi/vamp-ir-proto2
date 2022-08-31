@@ -32,7 +32,7 @@ expr4 = { "(" ~ negate* ~ expr5 ~ ")" | expr5 }
 
 expr5 = { expr6+ }
 
-expr6 = { "(" ~ expr ~ ")" | valueName | constant }
+expr6 = { "(" ~ expr ~ ")" | valueName | constant | &"fun" ~ expr | &"let" ~ expr }
 
 function = { "fun" ~ pattern+ ~ "->" ~ expr }
 
