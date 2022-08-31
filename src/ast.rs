@@ -66,26 +66,26 @@ impl Definition {
 impl fmt::Display for Definition {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Expression::Function(Function(params, body)) = &*self.0.1 {
-            let mut val = String::new();
-            write!(val, "{}", body)?;
-            if val.contains("\n") {
-                val = val.replace("\n", "\n    ");
-                write!(f, "let {}", self.0.0)?;
-                for param in params {
-                    write!(f, " {}", param)?;
-                }
-                write!(f, "=\n    {}", val)?
+            write!(f, "let {}", self.0.0)?;
+            for param in params {
+                write!(f, " {}", param)?;
+            }
+            let mut body_str = String::new();
+            write!(body_str, "{}", body)?;
+            if body_str.contains("\n") {
+                body_str = body_str.replace("\n", "\n    ");
+                write!(f, " =\n    {}", body_str)?
             } else {
-                write!(f, "let {} = {}", self.0.0, val)?
+                write!(f, " = {}", body_str)?
             }
         } else {
-            let mut val = String::new();
-            write!(val, "{}", self.0.1)?;
-            if val.contains("\n") {
-                val = val.replace("\n", "\n    ");
-                write!(f, "let {} =\n    {}", self.0.0, val)?
+            let mut val_str = String::new();
+            write!(val_str, "{}", self.0.1)?;
+            if val_str.contains("\n") {
+                val_str = val_str.replace("\n", "\n    ");
+                write!(f, "let {} =\n    {}", self.0.0, val_str)?
             } else {
-                write!(f, "let {} = {}", self.0.0, val)?
+                write!(f, "let {} = {}", self.0.0, val_str)?
             }
         }
         Ok(())
