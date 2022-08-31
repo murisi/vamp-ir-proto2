@@ -4,7 +4,7 @@ extern crate pest_derive;
 use std::collections::HashMap;
 mod ast;
 use std::fs;
-use crate::ast::{Module, Definition, Expression, Pattern, VariableId, LetBinding, Variable};
+use crate::ast::{Module, Definition, Expression, Pattern, VariableId, LetBinding, Variable, InfixOp};
 
 /* A structure for generating unique variable IDs. */
 struct VarGen(VariableId);
@@ -716,6 +716,137 @@ fn unitize_module_functions(module: &mut Module) {
     }
 }
 
+/* Flatten the given binding down into the set of constraints it defines. */
+fn flatten_binding(
+    pat: &Pattern,
+    expr: &Expression,
+    flattened: &mut Vec<Expression>,
+) {
+    match (pat, expr) {
+        (Pattern::Variable(pat),
+         expr @ (Expression::Variable(_) | Expression::Constant(_) |
+         Expression::Infix(_, _, _) | Expression::Negate(_))) => {
+            flattened.push(Expression::Infix(
+                InfixOp::Equal,
+                Box::new(Expression::Variable(pat.clone())),
+                Box::new(expr.clone()),
+            ));
+        },
+        (Pattern::Constant(pat),
+         expr @ (Expression::Variable(_) | Expression::Constant(_) |
+                 Expression::Infix(_, _, _) | Expression::Negate(_))) => {
+            flattened.push(Expression::Infix(
+                InfixOp::Equal,
+                Box::new(Expression::Constant(*pat)),
+                Box::new(expr.clone()),
+            ));
+        },
+        (Pattern::As(pat, _name), expr) => {
+            flatten_binding(pat, expr, flattened);
+        },
+        (Pattern::Product(pats), Expression::Product(exprs)) => {
+            for (pat, expr) in pats.iter().zip(exprs.iter()) {
+                flatten_binding(pat, expr, flattened);
+            }
+        }
+        _ => unreachable!("encountered unexpected binding: {} = {}", pat, expr),
+    }
+}
+
+/* Flatten the given equality down into the set of constraints it defines. */
+fn flatten_equality(
+    expr1: &Expression,
+    expr2: &Expression,
+    flattened: &mut Vec<Expression>,
+) {
+    match (expr1, expr2) {
+        (Expression::Product(prod1), Expression::Product(prod2)) => {
+            for (expr1, expr2) in prod1.iter().zip(prod2.iter()) {
+                flatten_equality(expr1, expr2, flattened);
+            }
+        },
+        (expr1 @ (Expression::Variable(_) | Expression::Negate(_) |
+                  Expression::Infix(_, _, _) | Expression::Constant(_)),
+         expr2 @ (Expression::Variable(_) | Expression::Negate(_) |
+                  Expression::Infix(_, _, _) | Expression::Constant(_))) => {
+            flattened.push(Expression::Infix(
+                InfixOp::Equal,
+                Box::new(expr1.clone()),
+                Box::new(expr2.clone())
+            ));
+        },
+        _ => unreachable!("encountered unexpected equality: {} = {}", expr1, expr2),
+    }
+}
+
+/* Flatten the given expression down into the set of constraints it defines. */
+fn flatten_expression(
+    expr: &Expression,
+    flattened: &mut Vec<Expression>,
+) -> Expression {
+    match expr {
+        Expression::Sequence(seq) => {
+            let mut val = None;
+            for expr in seq {
+                val = Some(flatten_expression(expr, flattened));
+            }
+            val.expect("encountered empty sequence").clone()
+        },
+        Expression::Infix(InfixOp::Equal, expr1, expr2) => {
+            let expr1 = flatten_expression(expr1, flattened);
+            let expr2 = flatten_expression(expr2, flattened);
+            flatten_equality(&expr1, &expr2, flattened);
+            Expression::Product(vec![])
+        },
+        Expression::Infix(InfixOp::NotEqual, _expr1, _expr2) =>
+            todo!("not equal expressions not supported yet"),
+        Expression::Infix(op, expr1, expr2) => {
+            let expr1 = flatten_expression(expr1, flattened);
+            let expr2 = flatten_expression(expr2, flattened);
+            Expression::Infix(*op, Box::new(expr1), Box::new(expr2))
+        },
+        Expression::Product(prod) => {
+            let mut exprs = vec![];
+            for expr in prod {
+                exprs.push(flatten_expression(expr, flattened));
+            }
+            Expression::Product(exprs)
+        },
+        Expression::Negate(expr1) =>
+            Expression::Negate(Box::new(flatten_expression(expr1, flattened))),
+        Expression::Constant(_) | Expression::Variable(_) => expr.clone(),
+        Expression::LetBinding(binding, body) => {
+            let val = flatten_expression(&*binding.1, flattened);
+            flatten_binding(&binding.0, &val, flattened);
+            flatten_expression(body, flattened)
+        }
+        Expression::Function(_) | Expression::Application(_, _) =>
+            unreachable!("functions must already by inlined and eliminated"),
+    }
+}
+
+/* Flatten the given definition down into the set of constraints it defines. */
+fn flatten_definition(
+    def: &Definition,
+    flattened: &mut Vec<Expression>,
+) {
+    let val = flatten_expression(&*def.0.1, flattened);
+    flatten_binding(&def.0.0, &val, flattened);
+}
+
+/* Flatten the given module down into the set of constraints it defines. */
+fn flatten_module(
+    module: &Module,
+    flattened: &mut Vec<Expression>,
+) {
+    for def in &module.defs {
+        flatten_definition(def, flattened);
+    }
+    for expr in &module.exprs {
+        flatten_expression(expr, flattened);
+    }
+}
+
 fn main() {
     let args: Vec<_> = std::env::args().collect();
     if args.len() < 2 {
@@ -756,4 +887,11 @@ fn main() {
     // Unitize all function expressions
     unitize_module_functions(&mut module);
     println!("{}", module);
+    // Start generating arithmetic constraints
+    let mut constraints = vec![];
+    flatten_module(&module, &mut constraints);
+    println!("Constraints:");
+    for constraint in &constraints {
+        println!("  {}", constraint);
+    }
 }
