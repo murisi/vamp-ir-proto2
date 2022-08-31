@@ -65,13 +65,28 @@ impl Definition {
 
 impl fmt::Display for Definition {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut body = String::new();
-        write!(body, "{}", self.0.1)?;
-        if body.contains("\n") {
-            body = body.replace("\n", "\n    ");
-            write!(f, "let {} =\n    {}", self.0.0, body)?
+        if let Expression::Function(Function(params, body)) = &*self.0.1 {
+            let mut val = String::new();
+            write!(val, "{}", body)?;
+            if val.contains("\n") {
+                val = val.replace("\n", "\n    ");
+                write!(f, "let {}", self.0.0)?;
+                for param in params {
+                    write!(f, " {}", param)?;
+                }
+                write!(f, "=\n    {}", val)?
+            } else {
+                write!(f, "let {} = {}", self.0.0, val)?
+            }
         } else {
-            write!(f, "let {} = {}", self.0.0, body)?
+            let mut val = String::new();
+            write!(val, "{}", self.0.1)?;
+            if val.contains("\n") {
+                val = val.replace("\n", "\n    ");
+                write!(f, "let {} =\n    {}", self.0.0, val)?
+            } else {
+                write!(f, "let {} = {}", self.0.0, val)?
+            }
         }
         Ok(())
     }
