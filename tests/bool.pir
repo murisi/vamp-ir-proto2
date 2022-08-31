@@ -7,13 +7,12 @@ aa 5 6;;
 
 let bool x = x*(x-1) = 0;;
 
-let map f (a,b,c,d) =
+let map (f,m) (a,b,c,d) =
     f a;
-    let y,z = b in 5;
     f b;
     f c;
     f d;;
 
-map bool c;;
+map (bool,0) c;;
 
 fun f -> f a;;

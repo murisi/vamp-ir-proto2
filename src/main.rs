@@ -679,6 +679,43 @@ fn collect_module_variables(
     }
 }
 
+/* Replace all functions occuring in the given expression with 0-tuples. */
+fn unitize_expr_functions(expr: &mut Expression) {
+    match expr {
+        Expression::Function(_) => *expr = Expression::Product(vec![]),
+        Expression::Sequence(exprs) | Expression::Product(exprs) => {
+            for expr in exprs {
+                unitize_expr_functions(expr);
+            }
+        },
+        Expression::Infix(_, expr1, expr2) | Expression::Application(expr1, expr2) => {
+            unitize_expr_functions(expr1);
+            unitize_expr_functions(expr2);
+        },
+        Expression::LetBinding(binding, body) => {
+            unitize_expr_functions(&mut *binding.1);
+            unitize_expr_functions(body);
+        },
+        Expression::Negate(expr1) => unitize_expr_functions(expr1),
+        Expression::Constant(_) | Expression::Variable(_) => {}
+    }
+}
+
+/* Replace all functions occuring in the given definition with 0-tuples. */
+fn unitize_def_functions(def: &mut Definition) {
+    unitize_expr_functions(&mut *def.0.1);
+}
+
+/* Replace all functions occuring in the given module with 0-tuples. */
+fn unitize_module_functions(module: &mut Module) {
+    for def in &mut module.defs {
+        unitize_def_functions(def);
+    }
+    for expr in &mut module.exprs {
+        unitize_expr_functions(expr);
+    }
+}
+
 fn main() {
     let args: Vec<_> = std::env::args().collect();
     if args.len() < 2 {
@@ -689,10 +726,12 @@ fn main() {
     let mut vg = VarGen::new();
     number_module_variables(&mut module, &mut vg);
     apply_module_functions(&mut module, &mut vg);
-    let mut map = HashMap::new();
-    elaborate_module_variables(&module, &mut map, &mut vg);
+    // Collect variable names for the variable we will create
     let mut vars = HashMap::new();
     collect_module_variables(&module, &mut vars);
+    // Expand all variables into their constituents
+    let mut map = HashMap::new();
+    elaborate_module_variables(&module, &mut map, &mut vg);
     let mut expr_map = HashMap::new();
     let mut pat_map = HashMap::new();
     for (var, expr) in &map {
@@ -702,5 +741,19 @@ fn main() {
         pat_map.insert(*var, pat);
     }
     substitute_module_variables(&mut module, &pat_map, &expr_map);
+    // Unitize all function variable expressions and patterns
+    let mut map = HashMap::new();
+    elaborate_module_variables(&module, &mut map, &mut vg);
+    let mut expr_map = HashMap::new();
+    let mut pat_map = HashMap::new();
+    for (var, expr) in &map {
+        if let Expression::Function(_) = expr {
+            expr_map.insert(*var, Expression::Product(vec![]));
+            pat_map.insert(*var, Pattern::Product(vec![]));
+        }
+    }
+    substitute_module_variables(&mut module, &pat_map, &expr_map);
+    // Unitize all function expressions
+    unitize_module_functions(&mut module);
     println!("{}", module);
 }
