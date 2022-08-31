@@ -97,12 +97,8 @@ fn match_pattern_expr(
         },
         (Pattern::Product(pats), Expression::Variable(var)) => {
             let mut inner_exprs = vec![];
-            for idx in 0..pats.len() {
-                let mut new_var = Variable::new(gen.generate_id());
-                // Derive component name from parent if possible
-                if let Some(name) = &var.name {
-                    new_var.name = Some(name.clone() + "." + &idx.to_string());
-                }
+            for _ in pats {
+                let new_var = Variable::new(gen.generate_id());
                 inner_exprs.push(Expression::Variable(new_var));
             }
             map.insert(var.id, Expression::Product(inner_exprs));
@@ -562,33 +558,124 @@ fn generate_pattern_exprs(
     expr: &Expression,
     map: &HashMap<VariableId, Expression>,
     gen: &mut VarGen,
+    name: &Option<String>,
 ) -> (Pattern, Expression) {
-    
     match expr {
         Expression::Variable(var) if map.contains_key(&var.id) => {
-            generate_pattern_exprs(&map[&var.id], map, gen)
+            generate_pattern_exprs(&map[&var.id], map, gen, name)
         },
-        Expression::Variable(var) => {
+        Expression::Variable(_) => {
             let mut new_var = Variable::new(gen.generate_id());
-            new_var.name = var.name.clone();
+            new_var.name = name.clone();
             (Pattern::Variable(new_var.clone()), Expression::Variable(new_var))
         },
         Expression::Function(_) | Expression::Infix(_, _, _) |
         Expression::Constant(_) | Expression::Negate(_) => {
-            let var = Variable::new(gen.generate_id());
+            let mut var = Variable::new(gen.generate_id());
+            var.name = name.clone();
             (Pattern::Variable(var.clone()), Expression::Variable(var))
         },
         Expression::Product(prod) => {
             let mut pats = vec![];
             let mut exprs = vec![];
-            for expr in prod {
-                let (pat, expr) = generate_pattern_exprs(expr, map, gen);
+            for (idx, expr) in prod.iter().enumerate() {
+                let inner_name = name.clone().map(|x| x + "." + &idx.to_string());
+                let (pat, expr) = generate_pattern_exprs(expr, map, gen, &inner_name);
                 pats.push(pat);
                 exprs.push(expr);
             }
             (Pattern::Product(pats), Expression::Product(exprs))
         },
         _ => unreachable!("unexpected normalized expression"),
+    }
+}
+
+/* Collect all the variables occuring in the given pattern. */
+fn collect_pattern_variables(
+    pat: &Pattern,
+    map: &mut HashMap<VariableId, Variable>,
+) {
+    match pat {
+        Pattern::Variable(var) => {
+            map.insert(var.id, var.clone());
+        },
+        Pattern::As(pat, var) => {
+            map.insert(var.id, var.clone());
+            collect_pattern_variables(pat, map);
+        },
+        Pattern::Product(prod) => {
+            for pat in prod {
+                collect_pattern_variables(pat, map);
+            }
+        },
+        Pattern::Constant(_) => {}
+    }
+}
+
+/* Collect all the variables occuring in the given expression. */
+fn collect_expr_variables(
+    expr: &Expression,
+    map: &mut HashMap<VariableId, Variable>,
+) {
+    match expr {
+        Expression::Variable(var) => {
+            map.insert(var.id, var.clone());
+        },
+        Expression::Sequence(seq) => {
+            for expr in seq {
+                collect_expr_variables(expr, map);
+            }
+        },
+        Expression::Product(prod) => {
+            for expr in prod {
+                collect_expr_variables(expr, map);
+            }
+        },
+        Expression::Infix(_, expr1, expr2) => {
+            collect_expr_variables(expr1, map);
+            collect_expr_variables(expr2, map);
+        },
+        Expression::Negate(expr1) => {
+            collect_expr_variables(expr1, map);
+        },
+        Expression::Application(expr1, expr2) => {
+            collect_expr_variables(expr1, map);
+            collect_expr_variables(expr2, map);
+        },
+        Expression::Function(fun) => {
+            for param in &fun.0 {
+                collect_pattern_variables(param, map);
+            }
+            collect_expr_variables(&*fun.1, map);
+        },
+        Expression::LetBinding(binding, body) => {
+            collect_expr_variables(&*binding.1, map);
+            collect_pattern_variables(&binding.0, map);
+            collect_expr_variables(body, map);
+        },
+        Expression::Constant(_) => {},
+    }
+}
+
+/* Collect all the variables occuring in the given definition. */
+fn collect_def_variables(
+    def: &Definition,
+    map: &mut HashMap<VariableId, Variable>,
+) {
+    collect_expr_variables(&*def.0.1, map);
+    collect_pattern_variables(&def.0.0, map);
+}
+
+/* Collect all the variables occuring in the given module. */
+fn collect_module_variables(
+    module: &Module,
+    map: &mut HashMap<VariableId, Variable>,
+) {
+    for def in &module.defs {
+        collect_def_variables(def, map);
+    }
+    for expr in &module.exprs {
+        collect_expr_variables(expr, map);
     }
 }
 
@@ -604,10 +691,13 @@ fn main() {
     apply_module_functions(&mut module, &mut vg);
     let mut map = HashMap::new();
     elaborate_module_variables(&module, &mut map, &mut vg);
+    let mut vars = HashMap::new();
+    collect_module_variables(&module, &mut vars);
     let mut expr_map = HashMap::new();
     let mut pat_map = HashMap::new();
     for (var, expr) in &map {
-        let (pat, expr) = generate_pattern_exprs(&expr, &map, &mut vg);
+        let name = vars.get(var).and_then(|x| x.name.clone());
+        let (pat, expr) = generate_pattern_exprs(&expr, &map, &mut vg, &name);
         expr_map.insert(*var, expr);
         pat_map.insert(*var, pat);
     }
