@@ -8,3 +8,13 @@ edition = "2021"
 [dependencies]
 pest = "2.0"
 pest_derive = "2.0"
+ark-ff = "0.3"
+ark-ec = "0.3"
+ark-bls12-381 = "0.3"
+ark-ed-on-bls12-381 = "0.3"
+ark-poly = "0.3"
+ark-poly-commit = "0.3"
+rand_core = "0.6.3"
+petgraph = "0.6.2"
+plonk = { path = "../plonk" }
+plonk-core = { path = "../plonk/plonk-core", features = [ "std", "trace", "trace-print" ] }
