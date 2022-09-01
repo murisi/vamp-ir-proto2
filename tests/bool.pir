@@ -5,7 +5,7 @@ let aa = fun x y ->
 
 aa 5 6;;
 
-let bool x = x*(x-1) = 0;;
+let bool a x = 1+x*(x-a) = 0;;
 
 let map (f,m) (a,b,c,d) =
     f a;
@@ -13,6 +13,6 @@ let map (f,m) (a,b,c,d) =
     f c;
     f d;;
 
-map (bool,0) c;;
+map (bool 1,0) c;;
 
 fun f -> f a;;

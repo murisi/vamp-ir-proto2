@@ -26,13 +26,17 @@ expr1 = { expr2 ~ ( ";" ~ expr2 )* }
 
 expr2 = { expr3 ~ ( "," ~ expr3 )* }
 
-expr3 = { expr4 ~ ( infixOp ~ expr4 )* }
+expr3 = { expr4 ~ ( &("=" | "!=") ~ infixOp ~ expr4 )* }
 
-expr4 = { "(" ~ negate* ~ expr5 ~ ")" | expr5 }
+expr4 = { expr5 ~ ( &("+" | "-") ~ infixOp ~ expr5 )* }
 
-expr5 = { expr6+ }
+expr5 = { expr6 ~ ( &("*" | "/") ~ infixOp ~ expr6 )* }
 
-expr6 = { "(" ~ expr ~ ")" | valueName | constant | &"fun" ~ expr | &"let" ~ expr }
+expr6 = { "(" ~ negate* ~ expr7 ~ ")" | expr7 }
+
+expr7 = { expr8+ }
+
+expr8 = { "(" ~ expr ~ ")" | valueName | constant | &"fun" ~ expr | &"let" ~ expr }
 
 function = { "fun" ~ pattern+ ~ "->" ~ expr }
 

@@ -295,15 +295,15 @@ impl Expression {
     pub fn parse_expr4(pair: Pair<Rule>) -> Option<Self> {
         if pair.as_rule() != Rule::expr4 { return None }
         let mut pairs = pair.into_inner();
-        let pair = pairs.next_back().expect("expression should not be empty");
+        let pair = pairs.next().expect("expression should not be empty");
         let mut expr =
             Self::parse_expr5(pair).expect("expression should start with product");
-        while let Some(pair) = pairs.next_back() {
-            if pair.as_rule() == Rule::negate {
-                expr = Expression::Negate(Box::new(expr));
-            } else {
-                unreachable!("only negative signs should occur here");
-            }
+        while let Some(pair) = pairs.next() {
+            let op = InfixOp::parse(pair).expect("expected arithmetic operator");
+            let rhs_pair = pairs.next().expect("expected RHS product");
+            let rhs = Self::parse_expr5(rhs_pair)
+                .expect("expected RHS to be a product");
+            expr = Self::Infix(op, Box::new(expr), Box::new(rhs));
         }
         Some(expr)
     }
@@ -315,15 +315,47 @@ impl Expression {
         let mut expr =
             Self::parse_expr6(pair).expect("expression should start with product");
         while let Some(pair) = pairs.next() {
-            let rhs = Self::parse_expr6(pair)
+            let op = InfixOp::parse(pair).expect("expected arithmetic operator");
+            let rhs_pair = pairs.next().expect("expected RHS product");
+            let rhs = Self::parse_expr6(rhs_pair)
                 .expect("expected RHS to be a product");
-            expr = Expression::Application(Box::new(expr), Box::new(rhs));
+            expr = Self::Infix(op, Box::new(expr), Box::new(rhs));
         }
         Some(expr)
     }
 
     pub fn parse_expr6(pair: Pair<Rule>) -> Option<Self> {
         if pair.as_rule() != Rule::expr6 { return None }
+        let mut pairs = pair.into_inner();
+        let pair = pairs.next_back().expect("expression should not be empty");
+        let mut expr =
+            Self::parse_expr7(pair).expect("expression should start with product");
+        while let Some(pair) = pairs.next_back() {
+            if pair.as_rule() == Rule::negate {
+                expr = Expression::Negate(Box::new(expr));
+            } else {
+                unreachable!("only negative signs should occur here");
+            }
+        }
+        Some(expr)
+    }
+
+    pub fn parse_expr7(pair: Pair<Rule>) -> Option<Self> {
+        if pair.as_rule() != Rule::expr7 { return None }
+        let mut pairs = pair.into_inner();
+        let pair = pairs.next().expect("expression should not be empty");
+        let mut expr =
+            Self::parse_expr8(pair).expect("expression should start with product");
+        while let Some(pair) = pairs.next() {
+            let rhs = Self::parse_expr8(pair)
+                .expect("expected RHS to be a product");
+            expr = Expression::Application(Box::new(expr), Box::new(rhs));
+        }
+        Some(expr)
+    }
+
+    pub fn parse_expr8(pair: Pair<Rule>) -> Option<Self> {
+        if pair.as_rule() != Rule::expr8 { return None }
         let string = pair.as_str();
         let mut pairs = pair.into_inner();
         let pair = pairs.next_back().expect("expression should not be empty");
