@@ -720,22 +720,21 @@ fn unitize_module_functions(module: &mut Module) {
 fn flatten_binding(
     pat: &Pattern,
     expr: &Expression,
-    flattened: &mut Vec<Expression>,
+    flattened: &mut Module,
 ) {
     match (pat, expr) {
-        (Pattern::Variable(pat),
+        (pat @ Pattern::Variable(_),
          expr @ (Expression::Variable(_) | Expression::Constant(_) |
          Expression::Infix(_, _, _) | Expression::Negate(_))) => {
-            flattened.push(Expression::Infix(
-                InfixOp::Equal,
-                Box::new(Expression::Variable(pat.clone())),
+            flattened.defs.push(Definition(LetBinding(
+                pat.clone(),
                 Box::new(expr.clone()),
-            ));
+            )));
         },
         (Pattern::Constant(pat),
          expr @ (Expression::Variable(_) | Expression::Constant(_) |
                  Expression::Infix(_, _, _) | Expression::Negate(_))) => {
-            flattened.push(Expression::Infix(
+            flattened.exprs.push(Expression::Infix(
                 InfixOp::Equal,
                 Box::new(Expression::Constant(*pat)),
                 Box::new(expr.clone()),
@@ -757,7 +756,7 @@ fn flatten_binding(
 fn flatten_equality(
     expr1: &Expression,
     expr2: &Expression,
-    flattened: &mut Vec<Expression>,
+    flattened: &mut Module,
 ) {
     match (expr1, expr2) {
         (Expression::Product(prod1), Expression::Product(prod2)) => {
@@ -769,7 +768,7 @@ fn flatten_equality(
                   Expression::Infix(_, _, _) | Expression::Constant(_)),
          expr2 @ (Expression::Variable(_) | Expression::Negate(_) |
                   Expression::Infix(_, _, _) | Expression::Constant(_))) => {
-            flattened.push(Expression::Infix(
+            flattened.exprs.push(Expression::Infix(
                 InfixOp::Equal,
                 Box::new(expr1.clone()),
                 Box::new(expr2.clone())
@@ -782,7 +781,7 @@ fn flatten_equality(
 /* Flatten the given expression down into the set of constraints it defines. */
 fn flatten_expression(
     expr: &Expression,
-    flattened: &mut Vec<Expression>,
+    flattened: &mut Module,
 ) -> Expression {
     match expr {
         Expression::Sequence(seq) => {
@@ -828,7 +827,7 @@ fn flatten_expression(
 /* Flatten the given definition down into the set of constraints it defines. */
 fn flatten_definition(
     def: &Definition,
-    flattened: &mut Vec<Expression>,
+    flattened: &mut Module,
 ) {
     let val = flatten_expression(&*def.0.1, flattened);
     flatten_binding(&def.0.0, &val, flattened);
@@ -837,7 +836,7 @@ fn flatten_definition(
 /* Flatten the given module down into the set of constraints it defines. */
 fn flatten_module(
     module: &Module,
-    flattened: &mut Vec<Expression>,
+    flattened: &mut Module,
 ) {
     for def in &module.defs {
         flatten_definition(def, flattened);
@@ -886,12 +885,9 @@ fn main() {
     substitute_module_variables(&mut module, &pat_map, &expr_map);
     // Unitize all function expressions
     unitize_module_functions(&mut module);
-    println!("{}", module);
+    println!("{}\n", module);
     // Start generating arithmetic constraints
-    let mut constraints = vec![];
+    let mut constraints = Module::default();
     flatten_module(&module, &mut constraints);
-    println!("Constraints:");
-    for constraint in &constraints {
-        println!("  {}", constraint);
-    }
+    println!("{}", constraints);
 }

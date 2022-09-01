@@ -38,6 +38,12 @@ impl Module {
     }
 }
 
+impl Default for Module {
+    fn default() -> Self {
+        Self { defs: vec![], exprs: vec![] }
+    }
+}
+
 impl fmt::Display for Module {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for def in &self.defs {
