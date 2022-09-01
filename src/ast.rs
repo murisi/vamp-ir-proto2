@@ -198,6 +198,21 @@ impl Pattern {
             _ => unreachable!("pattern is of unknown form")
         }
     }
+
+    pub fn to_expr(&self) -> Expression {
+        match self {
+            Self::Constant(val) => Expression::Constant(*val),
+            Self::Variable(var) => Expression::Variable(var.clone()),
+            Self::As(pat, _name) => pat.to_expr(),
+            Self::Product(pats) => {
+                let mut exprs = vec![];
+                for pat in pats {
+                    exprs.push(pat.to_expr());
+                }
+                Expression::Product(exprs)
+            }
+        }
+    }
 }
 
 impl fmt::Display for Pattern {

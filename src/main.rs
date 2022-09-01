@@ -716,6 +716,22 @@ fn unitize_module_functions(module: &mut Module) {
     }
 }
 
+/* Produce the given binary operation making sure to do any straightforward
+ * simplifications. */
+fn infix_op(op: InfixOp, e1: Expression, e2: Expression) -> Expression {
+    match (op, e1, e2) {
+        (InfixOp::Multiply, Expression::Constant(1), e2) => e2,
+        (InfixOp::Multiply, e1, Expression::Constant(1)) => e1,
+        (InfixOp::Multiply, e1 @ Expression::Constant(0), _) => e1,
+        (InfixOp::Multiply, _, e2 @ Expression::Constant(0)) => e2,
+        (InfixOp::Divide, e1, Expression::Constant(1)) => e1,
+        (InfixOp::Add, Expression::Constant(0), e2) => e2,
+        (InfixOp::Add, e1, Expression::Constant(0)) => e1,
+        (InfixOp::Subtract, e1, Expression::Constant(0)) => e1,
+        (op, e1, e2) => Expression::Infix(op, Box::new(e1), Box::new(e2))
+    }
+}
+
 /* Flatten the given binding down into the set of constraints it defines. */
 fn flatten_binding(
     pat: &Pattern,
@@ -753,7 +769,7 @@ fn flatten_binding(
 }
 
 /* Flatten the given equality down into the set of constraints it defines. */
-fn flatten_equality(
+fn flatten_equals(
     expr1: &Expression,
     expr2: &Expression,
     flattened: &mut Module,
@@ -761,7 +777,7 @@ fn flatten_equality(
     match (expr1, expr2) {
         (Expression::Product(prod1), Expression::Product(prod2)) => {
             for (expr1, expr2) in prod1.iter().zip(prod2.iter()) {
-                flatten_equality(expr1, expr2, flattened);
+                flatten_equals(expr1, expr2, flattened);
             }
         },
         (expr1 @ (Expression::Variable(_) | Expression::Negate(_) |
@@ -773,6 +789,43 @@ fn flatten_equality(
                 Box::new(expr1.clone()),
                 Box::new(expr2.clone())
             ));
+        },
+        _ => unreachable!("encountered unexpected equality: {} = {}", expr1, expr2),
+    }
+}
+
+/* Generate a constraint requiring that there be one position in the given
+ * structures where the corresponding variables do not match. */
+fn flatten_not_equals(
+    expr1: &Expression,
+    expr2: &Expression,
+    witness: &Variable,
+    def: &mut Expression,
+    constraint: &mut Expression,
+) {
+    match (expr1, expr2) {
+        (Expression::Product(prod1), Expression::Product(prod2)) => {
+            for (expr1, expr2) in prod1.iter().zip(prod2.iter()) {
+                flatten_not_equals(expr1, expr2, witness, def, constraint);
+            }
+        },
+        (expr1 @ (Expression::Variable(_) | Expression::Negate(_) |
+                  Expression::Infix(_, _, _) | Expression::Constant(_)),
+         expr2 @ (Expression::Variable(_) | Expression::Negate(_) |
+                  Expression::Infix(_, _, _) | Expression::Constant(_))) => {
+            *constraint = infix_op(
+                InfixOp::Multiply,
+                constraint.clone(),
+                infix_op(
+                    InfixOp::Subtract,
+                    Expression::Variable(witness.clone()),
+                    infix_op(
+                        InfixOp::Subtract,
+                        expr1.clone(),
+                        expr2.clone(),
+                    ),
+                )
+            );
         },
         _ => unreachable!("encountered unexpected equality: {} = {}", expr1, expr2),
     }
@@ -794,7 +847,7 @@ fn flatten_expression(
         Expression::Infix(InfixOp::Equal, expr1, expr2) => {
             let expr1 = flatten_expression(expr1, flattened);
             let expr2 = flatten_expression(expr2, flattened);
-            flatten_equality(&expr1, &expr2, flattened);
+            flatten_equals(&expr1, &expr2, flattened);
             Expression::Product(vec![])
         },
         Expression::Infix(InfixOp::NotEqual, _expr1, _expr2) =>
@@ -846,6 +899,119 @@ fn flatten_module(
     }
 }
 
+/* Flatten the given expression down to a single term and place the definitions
+ * of its parts into the given module. The parts always take the following form:
+ * term1 = -term2 or term1 = term2 OP term3 */
+fn flatten_expr_to_3ac(
+    out: Option<Pattern>,
+    expr: &Expression,
+    flattened: &mut Module,
+    gen: &mut VarGen,
+) -> Pattern {
+    match (out, expr) {
+        (None, Expression::Constant(val)) => Pattern::Constant(*val),
+        (None, Expression::Variable(var)) => Pattern::Variable(var.clone()),
+        (Some(pat),
+         Expression::Constant(_) | Expression::Variable(_)) => {
+            flattened.defs.push(Definition(LetBinding(
+                pat.clone(),
+                Box::new(expr.clone()),
+            )));
+            pat
+        },
+        (out, Expression::Negate(n)) => {
+            let out1_term = flatten_expr_to_3ac(None, n, flattened, gen);
+            let rhs = Expression::Negate(Box::new(out1_term.to_expr()));
+            let out_var = Variable::new(gen.generate_id());
+            let out = out.unwrap_or(Pattern::Variable(out_var.clone()));
+            flattened.defs.push(Definition(LetBinding(out.clone(), Box::new(rhs.clone()))));
+            out
+        },
+        (out, Expression::Infix(op, e1, e2)) => {
+            let out1_term = flatten_expr_to_3ac(None, e1, flattened, gen);
+            let out2_term = flatten_expr_to_3ac(None, e2, flattened, gen);
+            let rhs = infix_op(
+                *op,
+                out1_term.to_expr(),
+                out2_term.to_expr(),
+            );
+            let out_var = Variable::new(gen.generate_id());
+            let out = out.unwrap_or(Pattern::Variable(out_var.clone()));
+            flattened.defs.push(Definition(LetBinding(out.clone(), Box::new(rhs.clone()))));
+            out
+        },
+        _ => panic!("encountered unexpected expression: {}", expr),
+    }
+}
+
+/* Flatten the given definition into three-address form. */
+fn flatten_def_to_3ac(
+    def: &Definition,
+    flattened: &mut Module,
+    gen: &mut VarGen,
+) {
+    flatten_expr_to_3ac(Some(def.0.0.clone()), &*def.0.1, flattened, gen);
+}
+
+/* Flatten all definitions and expressions in this module into three-address
+ * form. */
+fn flatten_module_to_3ac(
+    module: &Module,
+    flattened: &mut Module,
+    gen: &mut VarGen,
+) {
+    for def in &module.defs {
+        flatten_def_to_3ac(def, flattened, gen);
+    }
+    for expr in &module.exprs {
+        if let Expression::Infix(InfixOp::Equal, lhs, rhs) = expr {
+            // Flatten this equality constraint into a series of definitions.
+            // The last inserted definition is always an encoding of an equality
+            // constraint.
+            match (&**lhs, &**rhs) {
+                (Expression::Variable(var), ohs) |
+                (ohs, Expression::Variable(var)) => {
+                    flatten_expr_to_3ac(
+                        Some(Pattern::Variable(var.clone())),
+                        ohs,
+                        flattened,
+                        gen
+                    );
+                },
+                (Expression::Constant(val), ohs) |
+                (ohs, Expression::Constant(val)) => {
+                    flatten_expr_to_3ac(
+                        Some(Pattern::Constant(*val)),
+                        ohs,
+                        flattened,
+                        gen
+                    );
+                },
+                (lhs, rhs) => {
+                    let lhs = flatten_expr_to_3ac(None, lhs, flattened, gen);
+                    let rhs = flatten_expr_to_3ac(None, rhs, flattened, gen);
+                    flatten_expr_to_3ac(
+                        Some(lhs),
+                        &rhs.to_expr(),
+                        flattened,
+                        gen
+                    );
+                }
+            }
+            // Encode the last definition back into an equality constraint.
+            let new_def = flattened
+                .defs
+                .pop()
+                .expect("a definition should have been made for the current expression");
+            flattened.exprs.push(Expression::Infix(
+                InfixOp::Equal,
+                Box::new(new_def.0.0.to_expr()),
+                new_def.0.1,
+            ));
+        }
+    }
+}
+
 fn main() {
     let args: Vec<_> = std::env::args().collect();
     if args.len() < 2 {
@@ -889,5 +1055,8 @@ fn main() {
     // Start generating arithmetic constraints
     let mut constraints = Module::default();
     flatten_module(&module, &mut constraints);
-    println!("{}", constraints);
+    println!("{}\n", constraints);
+    let mut module_3ac = Module::default();
+    flatten_module_to_3ac(&constraints, &mut module_3ac, &mut vg);
+    println!("{}\n", module_3ac);
 }
