@@ -4,7 +4,7 @@ extern crate pest;
 #[macro_use]
 extern crate pest_derive;
 use std::fs;
-use crate::ast::{Module, VariableId, Expression, InfixOp};
+use crate::ast::{Module, VariableId, Expression, InfixOp, Pattern};
 use crate::transform::{compile, collect_module_variables};
 use ark_ff::PrimeField;
 use ark_ec::TEModelParameters;
@@ -17,7 +17,7 @@ use rand_core::OsRng;
 use plonk::error::to_pc_error;
 use plonk_core::constraint_system::StandardComposer;
 use plonk_core::error::Error;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 use std::marker::PhantomData;
 //use crate::ast::{Program, Literal, Expression, ArithOp, RelOp, Term, Predicate, Clause};
 use std::io::Write;
@@ -30,6 +30,32 @@ fn make_constant<F: PrimeField>(c: i32) -> F {
         F::from(c as u32)
     } else {
         -F::from((-c) as u32)
+    }
+}
+
+/* Evaluate the given expression sourcing any variables from the given map. */
+fn evaluate_expr(expr: &Expression, defs: &mut HashMap<VariableId, Expression>) -> i32 {
+    match expr {
+        Expression::Constant(c) => *c,
+        Expression::Variable(v) => {
+            let val = evaluate_expr(&defs[&v.id].clone(), defs);
+            defs.insert(v.id, Expression::Constant(val));
+            val
+        },
+        Expression::Negate(e) => -evaluate_expr(e, defs),
+        Expression::Infix(InfixOp::Add, a, b) =>
+            evaluate_expr(&a, defs) +
+            evaluate_expr(&b, defs),
+        Expression::Infix(InfixOp::Subtract, a, b) =>
+            evaluate_expr(&a, defs) -
+            evaluate_expr(&b, defs),
+        Expression::Infix(InfixOp::Multiply, a, b) =>
+            evaluate_expr(&a, defs) *
+            evaluate_expr(&b, defs),
+        Expression::Infix(InfixOp::Divide, a, b) =>
+            evaluate_expr(&a, defs) /
+            evaluate_expr(&b, defs),
+        _ => unreachable!("encountered unexpected expression: {}", expr),
     }
 }
 
@@ -59,37 +85,29 @@ where
 
     /* Populate the input and auxilliary variables from the given program inputs
        and choice points. */
-    /*fn populate_variables(
+    fn populate_variables(
         &mut self,
-        var_assignments: BTreeMap<ast::Variable, i32>,
-        choice_points: HashMap<Vec<usize>, i32>
+        var_assignments: HashMap<VariableId, i32>,
     ) {
         // Get the definitions necessary to populate auxiliary variables
-        let mut definitions = self.module.definitions.clone();
-        // Hard-code constant definitions for choice points and variable
-        // assignments
-        let mut remaining_choices: BTreeSet<_> =
-            self.module.choice_points.values().collect();
-        for (path, choice) in &choice_points {
-            let choice_var = self.module.choice_points[path].clone();
-            remaining_choices.remove(&choice_var);
-            definitions.insert(choice_var, Expression::Term(Term::Constant(*choice)));
+        let mut definitions = HashMap::new();
+        for def in &self.module.defs {
+            if let Pattern::Variable(var) = &def.0.0 {
+                definitions.insert(var.id, *def.0.1.clone());
+            }
         }
         // Set the remaining choices to arbitrary values since they will be
         // cancelled out in computations
-        for choice_var in remaining_choices {
-            definitions.insert(choice_var.clone(), Expression::Term(Term::Constant(0)));
-        }
         for (var, value) in &var_assignments {
-            definitions.insert(var.clone(), Expression::Term(Term::Constant(*value)));
+            definitions.insert(*var, Expression::Constant(*value));
         }
         // Start deriving witnesses
         for (var, value) in &mut self.variable_map {
-            let var_expr = Expression::Term(Term::Variable(var.clone()));
+            let var_expr = Expression::Variable(ast::Variable::new(*var));
             let expr_val = evaluate_expr(&var_expr, &mut definitions);
             *value = make_constant(expr_val);
         }
-    }*/
+    }
 }
 
 impl<F, P> Circuit<F, P> for PlonkModule<F, P>
@@ -714,6 +732,33 @@ where
     }
 }
 
+/* Prompt for satisfying inputs to the given program and derive the choice
+ * points that prove them. */
+fn prompt_inputs(annotated: &Module,) -> HashMap<VariableId, i32> {
+    let mut input_variables = HashMap::new();
+    collect_module_variables(&annotated, &mut input_variables);
+    // Defined variables should not be requested from user
+    for def in &annotated.defs {
+        if let Pattern::Variable(var) = &def.0.0 {
+            input_variables.remove(&var.id);
+        }
+    }
+    
+    let mut var_assignments = HashMap::new();
+    // Solicit input variables from user and solve for choice point values
+    for (id, var) in input_variables {
+        print!("{}: ", var);
+        std::io::stdout().flush().expect("flush failed!");
+        let mut input_line = String::new();
+        std::io::stdin()
+            .read_line(&mut input_line)
+            .expect("failed to read input");
+        let x: i32 = input_line.trim().parse().expect("input not an integer");
+        var_assignments.insert(id, x);
+    }
+    var_assignments
+}
+
 fn main() {
     let args: Vec<_> = std::env::args().collect();
     if args.len() < 2 {
@@ -723,4 +768,35 @@ fn main() {
     let module = Module::parse(&unparsed_file).unwrap();
     let module_3ac = compile(module);
     println!("{}\n", module_3ac);
+
+    // Generate CRS
+    type PC = SonicKZG10<Bls12_381, DensePolynomial<BlsScalar>>;
+    let pp = PC::setup(1 << 10, None, &mut OsRng)
+        .map_err(to_pc_error::<BlsScalar, PC>)
+        .expect("unable to setup polynomial commitment scheme public parameters");
+    let mut circuit = PlonkModule::<BlsScalar, JubJubParameters>::new(module_3ac.clone());
+    // Compile the circuit
+    let (pk_p, vk) = circuit.compile::<PC>(&pp).expect("unable to compile circuit");
+    
+    // Prover POV
+    println!("Proving...");
+    let mut circuit = PlonkModule::<BlsScalar, JubJubParameters>::new(module_3ac.clone());
+    // Prompt for program inputs
+    let var_assignments = prompt_inputs(&module_3ac);
+    // Populate variable definitions
+    circuit.populate_variables(var_assignments);
+    // Start proving witnesses
+    let (proof, pi) = circuit.gen_proof::<PC>(&pp, pk_p, b"Test").unwrap();
+
+    // Verifier POV
+    println!("Verifying...");
+    let verifier_data = VerifierData::new(vk, pi);
+    let verifier_result = verify_proof::<BlsScalar, JubJubParameters, PC>(
+        &pp,
+        verifier_data.key,
+        &proof,
+        &verifier_data.pi,
+        b"Test",
+    );
+    println!("Verifier Result: {:?}", verifier_result);
 }
