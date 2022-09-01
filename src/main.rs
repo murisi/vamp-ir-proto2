@@ -716,7 +716,7 @@ where
                         composer.arithmetic_gate(|gate| {
                             gate.witness(inputs[&v2.id], inputs[&v3.id], Some(zero))
                                 .mul(F::one())
-                                .out(-op1)
+                                .constant(-op1)
                         });
                         true
                     }) => {},
