@@ -894,6 +894,18 @@ pub fn flatten_module(
     }
 }
 
+/* Make an equality expression to constrain the values that satify the circuit.
+ * Simultaneously also make a variable definition to enable provers to generate
+ * the necessary auxiliary variables. */
+fn push_constraint_def(module: &mut Module, out: Pattern, expr: Expression) {
+    module.exprs.push(Expression::Infix(
+        InfixOp::Equal,
+        Box::new(out.to_expr()),
+        Box::new(expr.clone())
+    ));
+    module.defs.push(Definition(LetBinding(out, Box::new(expr))));
+}
+
 /* Flatten the given expression down to a single term and place the definitions
  * of its parts into the given module. The parts always take the following form:
  * term1 = -term2 or term1 = term2 OP term3 */
@@ -908,10 +920,7 @@ fn flatten_expr_to_3ac(
         (None, Expression::Variable(var)) => Pattern::Variable(var.clone()),
         (Some(pat),
          Expression::Constant(_) | Expression::Variable(_)) => {
-            flattened.defs.push(Definition(LetBinding(
-                pat.clone(),
-                Box::new(expr.clone()),
-            )));
+            push_constraint_def(flattened, pat.clone(), expr.clone());
             pat
         },
         (out, Expression::Negate(n)) => {
@@ -919,7 +928,7 @@ fn flatten_expr_to_3ac(
             let rhs = Expression::Negate(Box::new(out1_term.to_expr()));
             let out_var = Variable::new(gen.generate_id());
             let out = out.unwrap_or(Pattern::Variable(out_var.clone()));
-            flattened.defs.push(Definition(LetBinding(out.clone(), Box::new(rhs.clone()))));
+            push_constraint_def(flattened, out.clone(), rhs);
             out
         },
         (out, Expression::Infix(op, e1, e2)) => {
@@ -932,7 +941,7 @@ fn flatten_expr_to_3ac(
             );
             let out_var = Variable::new(gen.generate_id());
             let out = out.unwrap_or(Pattern::Variable(out_var.clone()));
-            flattened.defs.push(Definition(LetBinding(out.clone(), Box::new(rhs.clone()))));
+            push_constraint_def(flattened, out.clone(), rhs);
             out
         },
         _ => panic!("encountered unexpected expression: {}", expr),
@@ -993,16 +1002,12 @@ pub fn flatten_module_to_3ac(
                     );
                 }
             }
-            // Encode the last definition back into an equality constraint.
-            let new_def = flattened
+            // Remove the last definition because it is solely an equality
+            // constraint.
+            flattened
                 .defs
                 .pop()
                 .expect("a definition should have been made for the current expression");
-            flattened.exprs.push(Expression::Infix(
-                InfixOp::Equal,
-                Box::new(new_def.0.0.to_expr()),
-                new_def.0.1,
-            ));
         }
     }
 }

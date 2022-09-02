@@ -19,10 +19,8 @@ use plonk_core::constraint_system::StandardComposer;
 use plonk_core::error::Error;
 use std::collections::{BTreeMap, HashMap};
 use std::marker::PhantomData;
-//use crate::ast::{Program, Literal, Expression, ArithOp, RelOp, Term, Predicate, Clause};
 use std::io::Write;
 use plonk_core::prelude::VerifierData;
-//use crate::transform::{compile_program, collect_program_variables};
 
 // Make field elements from signed values
 fn make_constant<F: PrimeField>(c: i32) -> F {
@@ -83,8 +81,7 @@ where
         PlonkModule { module, variable_map, phantom: PhantomData }
     }
 
-    /* Populate the input and auxilliary variables from the given program inputs
-       and choice points. */
+    /* Populate input and auxilliary variables from the given program inputs. */
     fn populate_variables(
         &mut self,
         var_assignments: HashMap<VariableId, i32>,
@@ -96,8 +93,6 @@ where
                 definitions.insert(var.id, *def.0.1.clone());
             }
         }
-        // Set the remaining choices to arbitrary values since they will be
-        // cancelled out in computations
         for (var, value) in &var_assignments {
             definitions.insert(*var, Expression::Constant(*value));
         }
@@ -732,8 +727,7 @@ where
     }
 }
 
-/* Prompt for satisfying inputs to the given program and derive the choice
- * points that prove them. */
+/* Prompt for satisfying inputs to the given program. */
 fn prompt_inputs(annotated: &Module,) -> HashMap<VariableId, i32> {
     let mut input_variables = HashMap::new();
     collect_module_variables(&annotated, &mut input_variables);
