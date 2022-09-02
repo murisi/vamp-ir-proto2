@@ -1,6 +1,6 @@
 let aa = fun x y ->
     let a = 50 in
-        x*y=30;;
+        x*y = 30;;
 
 aa 5 6;;
 
