@@ -789,43 +789,6 @@ fn flatten_equals(
     }
 }
 
-/* Generate a constraint requiring that there be one position in the given
- * structures where the corresponding variables do not match. */
-fn flatten_not_equals(
-    expr1: &Expression,
-    expr2: &Expression,
-    witness: &Variable,
-    def: &mut Expression,
-    constraint: &mut Expression,
-) {
-    match (expr1, expr2) {
-        (Expression::Product(prod1), Expression::Product(prod2)) => {
-            for (expr1, expr2) in prod1.iter().zip(prod2.iter()) {
-                flatten_not_equals(expr1, expr2, witness, def, constraint);
-            }
-        },
-        (expr1 @ (Expression::Variable(_) | Expression::Negate(_) |
-                  Expression::Infix(_, _, _) | Expression::Constant(_)),
-         expr2 @ (Expression::Variable(_) | Expression::Negate(_) |
-                  Expression::Infix(_, _, _) | Expression::Constant(_))) => {
-            *constraint = infix_op(
-                InfixOp::Multiply,
-                constraint.clone(),
-                infix_op(
-                    InfixOp::Subtract,
-                    Expression::Variable(witness.clone()),
-                    infix_op(
-                        InfixOp::Subtract,
-                        expr1.clone(),
-                        expr2.clone(),
-                    ),
-                )
-            );
-        },
-        _ => unreachable!("encountered unexpected equality: {} = {}", expr1, expr2),
-    }
-}
-
 /* Flatten the given expression down into the set of constraints it defines. */
 fn flatten_expression(
     expr: &Expression,
@@ -845,8 +808,6 @@ fn flatten_expression(
             flatten_equals(&expr1, &expr2, flattened);
             Expression::Product(vec![])
         },
-        Expression::Infix(InfixOp::NotEqual, _expr1, _expr2) =>
-            todo!("not equal expressions not supported yet"),
         Expression::Infix(op, expr1, expr2) => {
             let expr1 = flatten_expression(expr1, flattened);
             let expr2 = flatten_expression(expr2, flattened);

@@ -448,7 +448,6 @@ pub enum InfixOp {
     Add,
     Subtract,
     Equal,
-    NotEqual,
 }
 
 impl InfixOp {
@@ -456,7 +455,6 @@ impl InfixOp {
         if pair.as_rule() != Rule::infixOp { return None }
         match pair.as_span().as_str() {
             "=" => Some(Self::Equal),
-            "!=" => Some(Self::NotEqual),
             "/" => Some(Self::Divide),
             "*" => Some(Self::Multiply),
             "+" => Some(Self::Add),
@@ -474,7 +472,6 @@ impl fmt::Display for InfixOp {
             Self::Add => write!(f, "+"),
             Self::Subtract => write!(f, "-"),
             Self::Equal => write!(f, "="),
-            Self::NotEqual => write!(f, "!="),
         }
     }
 }

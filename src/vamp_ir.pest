@@ -6,7 +6,7 @@ keyword = { "in" | "let" | "fun" }
 
 valueName = { !keyword ~ lowercaseIdent }
 
-infixOp = { "/" | "*" | "+" | "-" | "=" | "!=" }
+infixOp = { "/" | "*" | "+" | "-" | "=" }
 
 integerLiteral = @{ "0" | ASCII_NONZERO_DIGIT ~ ASCII_DIGIT* }
 
@@ -26,7 +26,7 @@ expr1 = { expr2 ~ ( ";" ~ expr2 )* }
 
 expr2 = { expr3 ~ ( "," ~ expr3 )* }
 
-expr3 = { expr4 ~ ( &("=" | "!=") ~ infixOp ~ expr4 )* }
+expr3 = { expr4 ~ ( &"=" ~ infixOp ~ expr4 )* }
 
 expr4 = { expr5 ~ ( &("+" | "-") ~ infixOp ~ expr5 )* }
 
