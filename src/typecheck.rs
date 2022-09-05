@@ -1,8 +1,8 @@
 use std::fmt::{self, Display};
 use std::hash::{Hash, Hasher};
 use crate::ast::{Module, VariableId, Pattern, Variable, Expression, InfixOp, Function, Definition};
-use crate::transform::VarGen;
-use std::collections::HashMap;
+use crate::transform::{VarGen, collect_pattern_variables};
+use std::collections::{HashMap, HashSet};
 
 /* Useful for annotating objects like expressions without modifying their
  * structure. */
@@ -34,6 +34,70 @@ impl<'a, T> Ord for Id<'a, T> {
     }
 }
 
+/* Collect all polymorphic variables occuring in the given expression. */
+fn collect_expr_poly_vars(
+    expr: &Expression,
+    map: &mut HashMap<VariableId, Variable>,
+) {
+    match expr {
+        Expression::Variable(var) => {
+            map.insert(var.id, var.clone());
+        },
+        Expression::Sequence(seq) => {
+            for expr in seq {
+                collect_expr_poly_vars(expr, map);
+            }
+        },
+        Expression::Product(prod) => {
+            for expr in prod {
+                collect_expr_poly_vars(expr, map);
+            }
+        },
+        Expression::Infix(_, expr1, expr2) => {
+            collect_expr_poly_vars(expr1, map);
+            collect_expr_poly_vars(expr2, map);
+        },
+        Expression::Negate(expr1) => {
+            collect_expr_poly_vars(expr1, map);
+        },
+        Expression::Application(expr1, expr2) => {
+            collect_expr_poly_vars(expr1, map);
+            collect_expr_poly_vars(expr2, map);
+        },
+        Expression::Function(fun) => {
+            collect_expr_poly_vars(&*fun.1, map);
+        },
+        Expression::LetBinding(binding, body) => {
+            collect_expr_poly_vars(&*binding.1, map);
+            collect_pattern_variables(&binding.0, map);
+            collect_expr_poly_vars(body, map);
+        },
+        Expression::Constant(_) => {},
+    }
+}
+
+/* Collect all polymorphic variables occuring in the given definition. */
+fn collect_def_poly_vars(
+    def: &Definition,
+    map: &mut HashMap<VariableId, Variable>,
+) {
+    collect_expr_poly_vars(&*def.0.1, map);
+    collect_pattern_variables(&def.0.0, map);
+}
+
+/* Collect all polymorphic variables occuring in the given module. */
+pub fn collect_module_poly_vars(
+    module: &Module,
+    map: &mut HashMap<VariableId, Variable>,
+) {
+    for def in &module.defs {
+        collect_def_poly_vars(def, map);
+    }
+    for expr in &module.exprs {
+        collect_expr_poly_vars(expr, map);
+    }
+}
+
 /* A representation of expression types. */
 #[derive(Debug, Clone)]
 enum Type {
@@ -46,7 +110,7 @@ enum Type {
 impl Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Type::Int => write!(f, "Int"),
+            Type::Int => write!(f, "int"),
             Type::Variable(var) => write!(f, "{}", var),
             Type::Function(a, b) => write!(f, "{} -> {}", a, b),
             Type::Product(prod) => {
@@ -187,11 +251,41 @@ fn expand_type(
     }
 }
 
+/* Consistently replace all type variables occuring in type expression with
+ * fresh ones. Useful for let polymorphism. */
+fn refresh_type_vars(
+    typ: &mut Type,
+    map: &mut HashMap<VariableId, VariableId>,
+    gen: &mut VarGen
+) {
+    match typ {
+        Type::Int => {},
+        Type::Variable(var) => {
+            if let Some(target) = map.get(&var.id) {
+                var.id = *target;
+            } else {
+                map.insert(var.id, gen.generate_id());
+                var.id = map[&var.id];
+            }
+        },
+        Type::Function(a, b) => {
+            refresh_type_vars(a, map, gen);
+            refresh_type_vars(b, map, gen);
+        },
+        Type::Product(prod) => {
+            for elt in prod {
+                refresh_type_vars(elt, map, gen);
+            }
+        }
+    }
+}
+
 /* Recursively infer the types of expressions in the given expression tree.
  * Works by repeatedly generating and solving equations in the given typing
  * context. */
 fn infer_expr_types<'a>(
     expr: &'a Expression,
+    polymorphics: &HashSet<VariableId>,
     expr_types: &mut HashMap<Id<'a, Expression>, VariableId>,
     types: &mut HashMap<VariableId, Type>,
     gen: &mut VarGen,
@@ -199,15 +293,18 @@ fn infer_expr_types<'a>(
     match expr {
         Expression::Constant(_) => {
             let expr_var = expr_type_var(expr, expr_types, gen);
+            // num: int
             unify_types(&Type::Variable(expr_var), &Type::Int, types);
         },
         Expression::Infix(InfixOp::Equal, expr1, expr2) => {
-            infer_expr_types(expr1, expr_types, types, gen);
-            infer_expr_types(expr2, expr_types, types, gen);
+            infer_expr_types(expr1, polymorphics, expr_types, types, gen);
+            infer_expr_types(expr2, polymorphics, expr_types, types, gen);
             let expr_var = expr_type_var(expr, expr_types, gen);
             let expr1_var = expr_type_var(expr1, expr_types, gen);
             let expr2_var = expr_type_var(expr2, expr_types, gen);
+            // a = b: ()
             unify_types(&Type::Variable(expr_var), &Type::Product(vec![]), types);
+            // a: c |- b: c
             unify_types(
                 &Type::Variable(expr1_var),
                 &Type::Variable(expr2_var),
@@ -219,29 +316,35 @@ fn infer_expr_types<'a>(
             expr1,
             expr2
         ) => {
-            infer_expr_types(expr1, expr_types, types, gen);
-            infer_expr_types(expr2, expr_types, types, gen);
+            infer_expr_types(expr1, polymorphics, expr_types, types, gen);
+            infer_expr_types(expr2, polymorphics, expr_types, types, gen);
             let expr_var = expr_type_var(expr, expr_types, gen);
             let expr1_var = expr_type_var(expr1, expr_types, gen);
             let expr2_var = expr_type_var(expr2, expr_types, gen);
+            // a op b: int
             unify_types(&Type::Variable(expr_var), &Type::Int, types);
+            // a: int
             unify_types(&Type::Variable(expr1_var), &Type::Int, types);
+            // b: int
             unify_types(&Type::Variable(expr2_var), &Type::Int, types);
         },
         Expression::Negate(expr1) => {
-            infer_expr_types(expr1, expr_types, types, gen);
+            infer_expr_types(expr1, polymorphics, expr_types, types, gen);
             let expr_var = expr_type_var(expr, expr_types, gen);
             let expr1_var = expr_type_var(expr1, expr_types, gen);
+            // (-a): int
             unify_types(&Type::Variable(expr_var), &Type::Int, types);
+            // a: int
             unify_types(&Type::Variable(expr1_var), &Type::Int, types);
         },
         Expression::Sequence(seq) => {
             for expr in seq {
-                infer_expr_types(expr, expr_types, types, gen);
+                infer_expr_types(expr, polymorphics, expr_types, types, gen);
             }
             let last_expr = seq.last().expect("encountered empty sequence");
             let expr_var = expr_type_var(expr, expr_types, gen);
             let last_expr_var = expr_type_var(last_expr, expr_types, gen);
+            // aN: c |- (a1; ...; aN): c
             unify_types(
                 &Type::Variable(expr_var),
                 &Type::Variable(last_expr_var),
@@ -251,11 +354,12 @@ fn infer_expr_types<'a>(
         Expression::Product(prod) => {
             let mut prod_types = vec![];
             for expr in prod {
-                infer_expr_types(expr, expr_types, types, gen);
+                infer_expr_types(expr, polymorphics, expr_types, types, gen);
                 let expr_var = expr_type_var(expr, expr_types, gen);
                 prod_types.push(Type::Variable(expr_var));
             }
             let expr_var = expr_type_var(expr, expr_types, gen);
+            // a1: t1, ... aN: tN |- (a1, ..., aN): (t1, ..., tN)
             unify_types(
                 &Type::Variable(expr_var),
                 &Type::Product(prod_types),
@@ -263,11 +367,12 @@ fn infer_expr_types<'a>(
             );
         },
         Expression::Application(expr1, expr2) => {
-            infer_expr_types(expr1, expr_types, types, gen);
-            infer_expr_types(expr2, expr_types, types, gen);
+            infer_expr_types(expr1, polymorphics, expr_types, types, gen);
+            infer_expr_types(expr2, polymorphics, expr_types, types, gen);
             let expr_var = expr_type_var(expr, expr_types, gen);
             let expr1_var = expr_type_var(expr1, expr_types, gen);
             let expr2_var = expr_type_var(expr2, expr_types, gen);
+            // b: t, a b: u |- a: t -> u
             unify_types(
                 &Type::Variable(expr1_var),
                 &Type::Function(
@@ -278,7 +383,7 @@ fn infer_expr_types<'a>(
             );
         },
         Expression::Function(Function(params, expr1)) => {
-            infer_expr_types(expr1, expr_types, types, gen);
+            infer_expr_types(expr1, polymorphics, expr_types, types, gen);
             let expr_var = expr_type_var(expr, expr_types, gen);
             let expr1_var = expr_type_var(expr1, expr_types, gen);
             let mut func_var = Type::Variable(expr1_var);
@@ -286,25 +391,43 @@ fn infer_expr_types<'a>(
                 let param_var = pattern_type(param);
                 func_var = Type::Function(Box::new(param_var), Box::new(func_var));
             }
+            // a1: t1, ..., aN: tN |- b: u
+            // fun a1 ... aN -> b : t1 -> ... -> tN -> u
             unify_types(&Type::Variable(expr_var), &func_var, types);
         },
         Expression::LetBinding(def, expr2) => {
-            infer_expr_types(&*def.1, expr_types, types, gen);
+            infer_expr_types(&*def.1, polymorphics, expr_types, types, gen);
             let param_var = pattern_type(&def.0);
             let expr_var = expr_type_var(expr, expr_types, gen);
             let expr1_var = expr_type_var(&*def.1, expr_types, gen);
             let expr2_var = expr_type_var(expr2, expr_types, gen);
             unify_types(&Type::Variable(expr1_var), &param_var, types);
-            infer_expr_types(expr2, expr_types, types, gen);
+            infer_expr_types(expr2, polymorphics, expr_types, types, gen);
             unify_types(&Type::Variable(expr_var), &Type::Variable(expr2_var), types);
         },
         Expression::Variable(var) => {
             let expr_var = expr_type_var(expr, expr_types, gen);
-            unify_types(
-                &Type::Variable(expr_var),
-                &Type::Variable(Variable::new(var.id)),
-                types
-            );
+            if polymorphics.contains(&var.id) {
+                // If this variable is polymorphic, then we need to copy its
+                // type expression so that we don't affect the original
+                // variables.
+                let mut fresh = expand_type(&Type::Variable(var.clone()), types);
+                let mut new_map = HashMap::new();
+                refresh_type_vars(&mut fresh, &mut new_map, gen);
+                unify_types(
+                    &Type::Variable(expr_var),
+                    &fresh,
+                    types
+                );
+            } else {
+                // If the variable is monomorphic, then we do want its
+                // definition to be affected by future constraints.
+                unify_types(
+                    &Type::Variable(expr_var),
+                    &Type::Variable(Variable::new(var.id)),
+                    types
+                );
+            }
         },
     }
 }
@@ -313,11 +436,12 @@ fn infer_expr_types<'a>(
  */
 fn infer_def_types<'a>(
     def: &'a Definition,
+    polymorphics: &HashSet<VariableId>,
     expr_types: &mut HashMap<Id<'a, Expression>, VariableId>,
     types: &mut HashMap<VariableId, Type>,
     gen: &mut VarGen,
 ) {
-    infer_expr_types(&*def.0.1, expr_types, types, gen);
+    infer_expr_types(&*def.0.1, polymorphics, expr_types, types, gen);
     let param_var = pattern_type(&def.0.0);
     let expr_var = expr_type_var(&*def.0.1, expr_types, gen);
     unify_types(&Type::Variable(expr_var), &param_var, types);
@@ -327,11 +451,14 @@ fn infer_def_types<'a>(
 pub fn infer_module_types(annotated: &mut Module, gen: &mut VarGen) -> bool {
     let mut expr_types = HashMap::new();
     let mut types = HashMap::new();
+    let mut polymorphics = HashMap::new();
+    collect_module_poly_vars(annotated, &mut polymorphics);
+    let polymorphics: HashSet::<_> = polymorphics.into_keys().collect();
     for def in &mut annotated.defs {
-        infer_def_types(def, &mut expr_types, &mut types, gen);
+        infer_def_types(def, &polymorphics, &mut expr_types, &mut types, gen);
     }
     for expr in &mut annotated.exprs {
-        infer_expr_types(expr, &mut expr_types, &mut types, gen);
+        infer_expr_types(expr, &polymorphics, &mut expr_types, &mut types, gen);
     }
     false
 }

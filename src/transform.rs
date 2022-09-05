@@ -587,7 +587,7 @@ pub fn generate_pattern_exprs(
 }
 
 /* Collect all the variables occuring in the given pattern. */
-fn collect_pattern_variables(
+pub fn collect_pattern_variables(
     pat: &Pattern,
     map: &mut HashMap<VariableId, Variable>,
 ) {
