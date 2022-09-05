@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use crate::typecheck::infer_module_types;
 use crate::ast::{Module, Definition, Expression, Pattern, VariableId, LetBinding, Variable, InfixOp};
 
 /* A structure for generating unique variable IDs. */
@@ -977,6 +978,7 @@ pub fn flatten_module_to_3ac(
 pub fn compile(mut module: Module) -> Module {
     let mut vg = VarGen::new();
     number_module_variables(&mut module, &mut vg);
+    infer_module_types(&mut module, &mut vg);
     apply_module_functions(&mut module, &mut vg);
     // Collect variable names for the variable we will create
     let mut vars = HashMap::new();

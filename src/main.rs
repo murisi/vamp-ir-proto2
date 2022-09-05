@@ -1,6 +1,7 @@
 mod ast;
 mod transform;
 mod synthesis;
+mod typecheck;
 extern crate pest;
 #[macro_use]
 extern crate pest_derive;
@@ -20,9 +21,8 @@ use plonk_core::prelude::VerifierData;
 use crate::synthesis::PlonkModule;
 use plonk_core::circuit::Circuit;
 
-
 /* Prompt for satisfying inputs to the given program. */
-fn prompt_inputs(annotated: &Module,) -> HashMap<VariableId, i32> {
+fn prompt_inputs(annotated: &Module) -> HashMap<VariableId, i32> {
     let mut input_variables = HashMap::new();
     collect_module_variables(&annotated, &mut input_variables);
     // Defined variables should not be requested from user
