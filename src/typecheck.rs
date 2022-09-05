@@ -448,17 +448,16 @@ fn infer_def_types<'a>(
 }
 
 /* Type check the module using Hindley Milner. */
-pub fn infer_module_types(annotated: &mut Module, gen: &mut VarGen) -> bool {
+pub fn infer_module_types(annotated: &Module, gen: &mut VarGen) {
     let mut expr_types = HashMap::new();
     let mut types = HashMap::new();
     let mut polymorphics = HashMap::new();
     collect_module_poly_vars(annotated, &mut polymorphics);
     let polymorphics: HashSet::<_> = polymorphics.into_keys().collect();
-    for def in &mut annotated.defs {
+    for def in &annotated.defs {
         infer_def_types(def, &polymorphics, &mut expr_types, &mut types, gen);
     }
-    for expr in &mut annotated.exprs {
+    for expr in &annotated.exprs {
         infer_expr_types(expr, &polymorphics, &mut expr_types, &mut types, gen);
     }
-    false
 }
