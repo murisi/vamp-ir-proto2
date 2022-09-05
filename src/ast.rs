@@ -380,7 +380,9 @@ impl Expression {
         let string = pair.as_str();
         let mut pairs = pair.into_inner();
         let pair = pairs.next_back().expect("expression should not be empty");
-        if pair.as_rule() == Rule::constant {
+        if pair.as_rule() == Rule::constant && string.starts_with("(") {
+            Some(Self::Product(vec![]))
+        } else if pair.as_rule() == Rule::constant {
             let value = pair.as_str().parse().ok().expect("constant should be an integer");
             Some(Self::Constant(value))
         } else if pair.as_rule() == Rule::valueName {
