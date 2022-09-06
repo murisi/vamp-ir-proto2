@@ -1,6 +1,7 @@
 use pest::iterators::Pair;
 use std::fmt;
 use std::fmt::Write;
+use crate::typecheck::Type;
 use crate::pest::Parser;
 #[derive(Parser)]
 #[grammar = "vamp_ir.pest"]
@@ -9,7 +10,7 @@ pub struct VampirParser;
 #[derive(Debug, Clone)]
 pub struct Module {
     pub defs: Vec<Definition>,
-    pub exprs: Vec<Expression>,
+    pub exprs: Vec<TExpr>,
 }
 
 impl Module {
@@ -20,7 +21,7 @@ impl Module {
         while let Some(pair) = pairs.next() {
             match pair.as_rule() {
                 Rule::expr => {
-                    let expr = Expression::parse(pair).expect("expected expression");
+                    let expr = TExpr::parse(pair).expect("expected expression");
                     exprs.push(expr);
                 },
                 Rule::definition => {
@@ -71,7 +72,7 @@ impl Definition {
 
 impl fmt::Display for Definition {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Expression::Function(Function(params, body)) = &*self.0.1 {
+        if let Expr::Function(Function(params, body)) = &self.0.1.v {
             write!(f, "let {}", self.0.0)?;
             for param in params {
                 write!(f, " {}", param)?;
@@ -99,14 +100,14 @@ impl fmt::Display for Definition {
 }
 
 #[derive(Debug, Clone)]
-pub struct LetBinding(pub Pattern, pub Box<Expression>);
+pub struct LetBinding(pub Pattern, pub Box<TExpr>);
 
 impl LetBinding {
     pub fn parse(pair: Pair<Rule>) -> Option<Self> {
         if pair.as_rule() != Rule::letBinding { return None }
         let mut pairs = pair.into_inner();
         let pair = pairs.next_back().expect("let binding should not be empty");
-        let expr = Expression::parse(pair).expect("expression should end with expression");
+        let expr = TExpr::parse(pair).expect("expression should end with expression");
         let pair = pairs.next().expect("let binding should have at least two parts");
         match pair.as_rule() {
             Rule::valueName => {
@@ -117,7 +118,7 @@ impl LetBinding {
                         .expect("expected RHS to be a product");
                     pats.push(rhs);
                 }
-                let expr = Box::new(Expression::Function(Function(pats, Box::new(expr))));
+                let expr = Box::new(Expr::Function(Function(pats, Box::new(expr))).into());
                 Some(Self(Pattern::Variable(name), expr))
             },
             Rule::pattern => {
@@ -131,8 +132,8 @@ impl LetBinding {
 
 impl fmt::Display for LetBinding {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &*self.1 {
-            Expression::Function(fun) => {
+        match &self.1.v {
+            Expr::Function(fun) => {
                 write!(f, "{}", self.0)?;
                 for pat in &fun.0 {
                     write!(f, " {}", pat)?;
@@ -199,17 +200,17 @@ impl Pattern {
         }
     }
 
-    pub fn to_expr(&self) -> Expression {
+    pub fn to_expr(&self) -> TExpr {
         match self {
-            Self::Constant(val) => Expression::Constant(*val),
-            Self::Variable(var) => Expression::Variable(var.clone()),
+            Self::Constant(val) => Expr::Constant(*val).into(),
+            Self::Variable(var) => Expr::Variable(var.clone()).into(),
             Self::As(pat, _name) => pat.to_expr(),
             Self::Product(pats) => {
                 let mut exprs = vec![];
                 for pat in pats {
                     exprs.push(pat.to_expr());
                 }
-                Expression::Product(exprs)
+                Expr::Product(exprs).into()
             }
         }
     }
@@ -238,31 +239,37 @@ impl fmt::Display for Pattern {
 }
 
 #[derive(Debug, Clone)]
-pub enum Expression {
-    Sequence(Vec<Expression>),
-    Product(Vec<Expression>),
-    Infix(InfixOp, Box<Expression>, Box<Expression>),
-    Negate(Box<Expression>),
-    Application(Box<Expression>, Box<Expression>),
+pub struct TExpr {
+    pub v: Expr,
+    pub t: Option<Type>,
+}
+
+#[derive(Debug, Clone)]
+pub enum Expr {
+    Sequence(Vec<TExpr>),
+    Product(Vec<TExpr>),
+    Infix(InfixOp, Box<TExpr>, Box<TExpr>),
+    Negate(Box<TExpr>),
+    Application(Box<TExpr>, Box<TExpr>),
     Constant(i32),
     Variable(Variable),
     Function(Function),
-    LetBinding(LetBinding, Box<Expression>),
+    LetBinding(LetBinding, Box<TExpr>),
 }
 
-impl Expression {
+impl TExpr {
     pub fn parse(pair: Pair<Rule>) -> Option<Self> {
         if pair.as_rule() != Rule::expr { return None }
         let string = pair.as_str();
         let mut pairs = pair.into_inner();
         let pair = pairs.next_back().expect("expression should not be empty");
         if string.starts_with("fun") {
-            Function::parse(pair).map(Self::Function)
+            Function::parse(pair).map(|x| Expr::Function(x).into())
         } else if string.starts_with("let") {
             let body = Self::parse(pair).expect("expression should end with expression");
             let pair = pairs.next().expect("body expression should be prefixed by binding");
             let binding = LetBinding::parse(pair).expect("expression should start with binding");
-            Some(Self::LetBinding(binding, Box::new(body)))
+            Some(Expr::LetBinding(binding, Box::new(body)).into())
         } else {
             Self::parse_expr1(pair)
         }
@@ -280,7 +287,7 @@ impl Expression {
             exprs.push(rhs);
             
         }
-        Some(if exprs.len() == 1 { exprs[0].clone() } else { Self::Sequence(exprs) })
+        Some(if exprs.len() == 1 { exprs[0].clone() } else { Expr::Sequence(exprs).into() })
     }
 
     pub fn parse_expr2(pair: Pair<Rule>) -> Option<Self> {
@@ -294,7 +301,7 @@ impl Expression {
                 .expect("expected RHS to be a product");
             exprs.push(rhs);
         }
-        Some(if exprs.len() == 1 { exprs[0].clone() } else { Self::Product(exprs) })
+        Some(if exprs.len() == 1 { exprs[0].clone() } else { Expr::Product(exprs).into() })
     }
 
     pub fn parse_expr3(pair: Pair<Rule>) -> Option<Self> {
@@ -308,7 +315,7 @@ impl Expression {
             let rhs_pair = pairs.next().expect("expected RHS product");
             let rhs = Self::parse_expr4(rhs_pair)
                 .expect("expected RHS to be a product");
-            expr = Self::Infix(op, Box::new(expr), Box::new(rhs));
+            expr = Expr::Infix(op, Box::new(expr), Box::new(rhs)).into();
         }
         Some(expr)
     }
@@ -324,7 +331,7 @@ impl Expression {
             let rhs_pair = pairs.next().expect("expected RHS product");
             let rhs = Self::parse_expr5(rhs_pair)
                 .expect("expected RHS to be a product");
-            expr = Self::Infix(op, Box::new(expr), Box::new(rhs));
+            expr = Expr::Infix(op, Box::new(expr), Box::new(rhs)).into();
         }
         Some(expr)
     }
@@ -340,7 +347,7 @@ impl Expression {
             let rhs_pair = pairs.next().expect("expected RHS product");
             let rhs = Self::parse_expr6(rhs_pair)
                 .expect("expected RHS to be a product");
-            expr = Self::Infix(op, Box::new(expr), Box::new(rhs));
+            expr = Expr::Infix(op, Box::new(expr), Box::new(rhs)).into();
         }
         Some(expr)
     }
@@ -353,7 +360,7 @@ impl Expression {
             Self::parse_expr7(pair).expect("expression should start with product");
         while let Some(pair) = pairs.next_back() {
             if pair.as_rule() == Rule::negate {
-                expr = Expression::Negate(Box::new(expr));
+                expr = Expr::Negate(Box::new(expr)).into();
             } else {
                 unreachable!("only negative signs should occur here");
             }
@@ -370,7 +377,7 @@ impl Expression {
         while let Some(pair) = pairs.next() {
             let rhs = Self::parse_expr8(pair)
                 .expect("expected RHS to be a product");
-            expr = Expression::Application(Box::new(expr), Box::new(rhs));
+            expr = Expr::Application(Box::new(expr), Box::new(rhs)).into();
         }
         Some(expr)
     }
@@ -381,13 +388,13 @@ impl Expression {
         let mut pairs = pair.into_inner();
         let pair = pairs.next_back().expect("expression should not be empty");
         if pair.as_rule() == Rule::constant && string.starts_with("(") {
-            Some(Self::Product(vec![]))
+            Some(Expr::Product(vec![]).into())
         } else if pair.as_rule() == Rule::constant {
             let value = pair.as_str().parse().ok().expect("constant should be an integer");
-            Some(Self::Constant(value))
+            Some(Expr::Constant(value).into())
         } else if pair.as_rule() == Rule::valueName {
             let name = Variable::parse(pair).expect("expression should be value name");
-            Some(Self::Variable(name))
+            Some(Expr::Variable(name).into())
         } else if string.starts_with("(") || string.starts_with("fun") |
         string.starts_with("let") {
             Self::parse(pair)
@@ -397,10 +404,10 @@ impl Expression {
     }
 }
 
-impl fmt::Display for Expression {
+impl fmt::Display for TExpr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Sequence(exprs) => {
+        match &self.v {
+            Expr::Sequence(exprs) => {
                 let mut iter = exprs.iter();
                 if let Some(expr) = iter.next() {
                     write!(f, "{}", expr)?;
@@ -411,7 +418,7 @@ impl fmt::Display for Expression {
                     write!(f, "()")?;
                 }
             },
-            Self::Product(exprs) => {
+            Expr::Product(exprs) => {
                 let mut iter = exprs.iter();
                 write!(f, "(")?;
                 if let Some(expr) = iter.next() {
@@ -422,13 +429,13 @@ impl fmt::Display for Expression {
                 }
                 write!(f, ")")?;
             },
-            Self::Infix(op, expr1, expr2) => write!(f, "({}{}{})", expr1, op, expr2)?,
-            Self::Negate(expr) => write!(f, "-{}", expr)?,
-            Self::Application(expr1, expr2) => write!(f, "{} {}", expr1, expr2)?,
-            Self::Constant(val) => write!(f, "{}", val)?,
-            Self::Variable(var) => write!(f, "{}", var)?,
-            Self::Function(fun) => write!(f, "{}", fun)?,
-            Self::LetBinding(binding, expr) => {
+            Expr::Infix(op, expr1, expr2) => write!(f, "({}{}{})", expr1, op, expr2)?,
+            Expr::Negate(expr) => write!(f, "-{}", expr)?,
+            Expr::Application(expr1, expr2) => write!(f, "{} {}", expr1, expr2)?,
+            Expr::Constant(val) => write!(f, "{}", val)?,
+            Expr::Variable(var) => write!(f, "{}", var)?,
+            Expr::Function(fun) => write!(f, "{}", fun)?,
+            Expr::LetBinding(binding, expr) => {
                 let mut body = String::new();
                 write!(body, "{}", expr)?;
                 if body.contains("\n") {
@@ -440,6 +447,12 @@ impl fmt::Display for Expression {
             },
         }
         Ok(())
+    }
+}
+
+impl From<Expr> for TExpr {
+    fn from(v: Expr) -> TExpr {
+        TExpr { v, t: None }
     }
 }
 
@@ -508,14 +521,14 @@ impl fmt::Display for Variable {
 }
 
 #[derive(Debug, Clone)]
-pub struct Function(pub Vec<Pattern>, pub Box<Expression>);
+pub struct Function(pub Vec<Pattern>, pub Box<TExpr>);
 
 impl Function {
     pub fn parse(pair: Pair<Rule>) -> Option<Self> {
         if pair.as_rule() != Rule::function { return None }
         let mut pairs = pair.into_inner();
         let pair = pairs.next_back().expect("function should not be empty");
-        let body = Expression::parse(pair).expect("function should end with expression");
+        let body = TExpr::parse(pair).expect("function should end with expression");
         let mut params = vec![];
         while let Some(pair) = pairs.next() {
             let param =

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use crate::typecheck::infer_module_types;
-use crate::ast::{Module, Definition, Expression, Pattern, VariableId, LetBinding, Variable, InfixOp};
+use crate::ast::{Module, Definition, TExpr, Pattern, VariableId, LetBinding, Variable, InfixOp, Expr};
 
 /* A structure for generating unique variable IDs. */
 pub struct VarGen(VariableId);
@@ -19,46 +19,46 @@ impl VarGen {
 /* Replaces variable IDs in the given expression according to the given
  * substitution map. */
 fn refresh_expr_variables(
-    expr: &mut Expression,
+    expr: &mut TExpr,
     map: &HashMap<VariableId, VariableId>,
     gen: &mut VarGen,
 ) {
-    match expr {
-        Expression::Sequence(exprs) => {
+    match &mut expr.v {
+        Expr::Sequence(exprs) => {
             for expr in exprs {
                 refresh_expr_variables(expr, map, gen);
             }
         },
-        Expression::Product(exprs) => {
+        Expr::Product(exprs) => {
             for expr in exprs {
                 refresh_expr_variables(expr, map, gen);
             }
         },
-        Expression::Infix(_, expr1, expr2) => {
+        Expr::Infix(_, expr1, expr2) => {
             refresh_expr_variables(expr1, map, gen);
             refresh_expr_variables(expr2, map, gen);
         },
-        Expression::Negate(expr) => {
+        Expr::Negate(expr) => {
             refresh_expr_variables(expr, map, gen);
         },
-        Expression::Application(expr1, expr2) => {
+        Expr::Application(expr1, expr2) => {
             refresh_expr_variables(expr1, map, gen);
             refresh_expr_variables(expr2, map, gen);
         },
-        Expression::Constant(_) => {},
-        Expression::Variable(var) => {
+        Expr::Constant(_) => {},
+        Expr::Variable(var) => {
             if let Some(id) = map.get(&var.id) {
                 var.id = *id;
             }
         },
-        Expression::Function(fun) => {
+        Expr::Function(fun) => {
             let mut map = map.clone();
             for param in &mut fun.0 {
                 refresh_pattern_variables(param, &mut map, gen);
             }
             refresh_expr_variables(&mut fun.1, &map, gen);
         },
-        Expression::LetBinding(binding, expr) => {
+        Expr::LetBinding(binding, expr) => {
             refresh_expr_variables(&mut binding.1, map, gen);
             let mut map = map.clone();
             refresh_pattern_variables(&mut binding.0, &mut map, gen);
@@ -70,37 +70,37 @@ fn refresh_expr_variables(
 /* Match the given expression against the given pattern. */
 fn match_pattern_expr(
     pat: &Pattern,
-    expr: &Expression,
-    map: &mut HashMap<VariableId, Expression>,
+    expr: &TExpr,
+    map: &mut HashMap<VariableId, TExpr>,
     gen: &mut VarGen,
 ) {
-    match (pat, expr) {
-        (pat, Expression::Variable(var)) if map.contains_key(&var.id) =>
+    match (pat, &expr.v) {
+        (pat, Expr::Variable(var)) if map.contains_key(&var.id) =>
             match_pattern_expr(pat, &map[&var.id].clone(), map, gen),
-        (Pattern::As(pat, var), expr) => {
+        (Pattern::As(pat, var), _) => {
             match_pattern_expr(pat, expr, map, gen);
-            map.insert(var.id, expr.clone());
+            map.insert(var.id, expr.clone().into());
         },
         (Pattern::Variable(var), expr) => {
-            map.insert(var.id, expr.clone());
+            map.insert(var.id, expr.clone().into());
         },
-        (Pattern::Product(pats), Expression::Product(exprs))
+        (Pattern::Product(pats), Expr::Product(exprs))
             if pats.len() == exprs.len() =>
         {
             for (pat, expr) in pats.iter().zip(exprs.iter()) {
                 match_pattern_expr(pat, expr, map, gen);
             }
         },
-        (Pattern::Product(pats), Expression::Variable(var)) => {
+        (Pattern::Product(pats), Expr::Variable(var)) => {
             let mut inner_exprs = vec![];
             for _ in pats {
                 let new_var = Variable::new(gen.generate_id());
-                inner_exprs.push(Expression::Variable(new_var));
+                inner_exprs.push(Expr::Variable(new_var).into());
             }
-            map.insert(var.id, Expression::Product(inner_exprs));
+            map.insert(var.id, Expr::Product(inner_exprs).into());
             match_pattern_expr(pat, expr, map, gen);
         },
-        (Pattern::Constant(a), Expression::Constant(b)) if a == b => {},
+        (Pattern::Constant(a), Expr::Constant(b)) if a == b => {},
         _ => panic!("unable to match {} against {}", expr, pat),
     }
 }
@@ -165,35 +165,35 @@ fn number_pattern_variables(
  * If not found, then a new global variable binding is made. Binding expressions
  * introduce new local bindings. */
 fn number_expr_variables(
-    expr: &mut Expression,
+    expr: &mut TExpr,
     locals: &HashMap<String, VariableId>,
     globals: &mut HashMap<String, VariableId>,
     gen: &mut VarGen,
 ) {
-    match expr {
-        Expression::Sequence(exprs) => {
+    match &mut expr.v {
+        Expr::Sequence(exprs) => {
             for expr in exprs {
                 number_expr_variables(expr, locals, globals, gen);
             }
         },
-        Expression::Product(exprs) => {
+        Expr::Product(exprs) => {
             for expr in exprs {
                 number_expr_variables(expr, locals, globals, gen);
             }
         },
-        Expression::Infix(_, expr1, expr2) => {
+        Expr::Infix(_, expr1, expr2) => {
             number_expr_variables(expr1, locals, globals, gen);
             number_expr_variables(expr2, locals, globals, gen);
         },
-        Expression::Negate(expr) => {
+        Expr::Negate(expr) => {
             number_expr_variables(expr, locals, globals, gen);
         },
-        Expression::Application(expr1, expr2) => {
+        Expr::Application(expr1, expr2) => {
             number_expr_variables(expr1, locals, globals, gen);
             number_expr_variables(expr2, locals, globals, gen);
         },
-        Expression::Constant(_) => {},
-        Expression::Variable(var) => {
+        Expr::Constant(_) => {},
+        Expr::Variable(var) => {
             if let Some(name) = &var.name {
                 if let Some(id) = locals.get(name) {
                     var.id = *id;
@@ -205,14 +205,14 @@ fn number_expr_variables(
                 }
             }
         },
-        Expression::Function(fun) => {
+        Expr::Function(fun) => {
             let mut locals = locals.clone();
             for param in &mut fun.0 {
                 number_pattern_variables(param, &mut locals, gen);
             }
             number_expr_variables(&mut fun.1, &mut locals, globals, gen);
         },
-        Expression::LetBinding(binding, expr) => {
+        Expr::LetBinding(binding, expr) => {
             let mut locals = locals.clone();
             number_expr_variables(&mut binding.1, &mut locals, globals, gen);
             number_pattern_variables(&mut binding.0, &mut locals, gen);
@@ -254,106 +254,106 @@ pub fn number_module_variables(
  * binding containing an inlined body. Returns a normal form of the expression.
  */
 fn apply_functions(
-    expr: &mut Expression,
-    bindings: &HashMap<VariableId, Expression>,
+    expr: &mut TExpr,
+    bindings: &HashMap<VariableId, TExpr>,
     gen: &mut VarGen,
-) -> Expression {
-    match expr {
-        Expression::Application(expr1, expr2) => {
-            match &mut **expr1 {
-                Expression::Application(_, _) => {
+) -> TExpr {
+    match &mut expr.v {
+        Expr::Application(expr1, expr2) => {
+            match &mut expr1.v {
+                Expr::Application(_, _) => {
                     apply_functions(expr1, bindings, gen);
                     apply_functions(expr, bindings, gen)
                 },
-                Expression::Variable(var) => {
+                Expr::Variable(var) => {
                     if let Some(val) = bindings.get(&var.id) {
-                        *expr = Expression::Application(Box::new(val.clone()), expr2.clone());
+                        *expr = Expr::Application(Box::new(val.clone()), expr2.clone()).into();
                         apply_functions(expr, bindings, gen)
                     } else {
                         panic!("encountered unbound variable {}", var)
                     }
                 },
-                Expression::Function(_) => {
+                Expr::Function(_) => {
                     let substitutions = HashMap::new();
                     refresh_expr_variables(expr1, &substitutions, gen);
-                    if let Expression::Function(fun) = &mut **expr1 {
+                    if let Expr::Function(fun) = &mut expr1.v {
                         if fun.0.is_empty() {
                             unreachable!("functions should have at least one parameter");
                         }
                         let arg1 = fun.0.remove(0);
                         let new_body = if fun.0.is_empty() { &*fun.1 } else { expr1 };
                         let new_bind = LetBinding(arg1, expr2.clone());
-                        *expr = Expression::LetBinding(new_bind, Box::new(new_body.clone()));
+                        *expr = Expr::LetBinding(new_bind, Box::new(new_body.clone())).into();
                         apply_functions(expr, bindings, gen)
                     } else {
                         unreachable!("refreshing variables changed expression type")
                     }
                 },
-                Expression::Sequence(seq) => {
+                Expr::Sequence(seq) => {
                     if let Some(val) = seq.last_mut() {
-                        *val = Expression::Application(Box::new(val.clone()), expr2.clone());
+                        *val = Expr::Application(Box::new(val.clone()), expr2.clone()).into();
                         *expr = *expr1.clone();
                         apply_functions(expr, bindings, gen)
                     } else {
                         unreachable!("encountered an empty sequence")
                     }
                 },
-                Expression::LetBinding(_, body) => {
-                    *body = Box::new(Expression::Application(body.clone(), expr2.clone()));
+                Expr::LetBinding(_, body) => {
+                    *body = Box::new(Expr::Application(body.clone(), expr2.clone()).into());
                     *expr = *expr1.clone();
                     apply_functions(expr, bindings, gen)
                 },
-                Expression::Infix(_, _, _) => {
+                Expr::Infix(_, _, _) => {
                     panic!("cannot apply argument {} to infix {}", expr2, expr1)
                 },
-                Expression::Negate(_) => {
+                Expr::Negate(_) => {
                     panic!("cannot apply argument {} to negation {}", expr2, expr1)
                 },
-                Expression::Product(_) => {
+                Expr::Product(_) => {
                     panic!("cannot apply argument {} to tuple {}", expr2, expr1)
                 },
-                Expression::Constant(_) => {
+                Expr::Constant(_) => {
                     panic!("cannot apply argument {} to constant {}", expr2, expr1)
                 },
             }
         },
-        Expression::LetBinding(binding, body) => {
+        Expr::LetBinding(binding, body) => {
             let val = apply_functions(&mut *binding.1, bindings, gen);
             let mut bindings = bindings.clone();
             match_pattern_expr(&binding.0, &val, &mut bindings, gen);
             apply_functions(body, &bindings, gen)
         },
-        Expression::Sequence(seq) => {
+        Expr::Sequence(seq) => {
             let mut val = None;
             for expr in seq {
                 val = Some(apply_functions(expr, &bindings, gen));
             }
             val.expect("encountered empty sequence")
         },
-        Expression::Product(prod) => {
+        Expr::Product(prod) => {
             let mut vals = vec![];
             for expr in prod {
                 vals.push(apply_functions(expr, &bindings, gen));
             }
-            Expression::Product(vals)
+            Expr::Product(vals).into()
         },
-        Expression::Infix(op, expr1, expr2) => {
+        Expr::Infix(op, expr1, expr2) => {
             let expr1 = apply_functions(expr1, &bindings, gen);
             let expr2 = apply_functions(expr2, &bindings, gen);
-            Expression::Infix(op.clone(), Box::new(expr1), Box::new(expr2))
+            Expr::Infix(op.clone(), Box::new(expr1), Box::new(expr2)).into()
         },
-        Expression::Negate(expr1) => {
-            Expression::Negate(Box::new(apply_functions(expr1, &bindings, gen)))
+        Expr::Negate(expr1) => {
+            Expr::Negate(Box::new(apply_functions(expr1, &bindings, gen))).into()
         },
-        Expression::Constant(val) => Expression::Constant(*val),
-        Expression::Variable(var) => {
+        Expr::Constant(val) => Expr::Constant(*val).into(),
+        Expr::Variable(var) => {
             if let Some(val) = bindings.get(&var.id) {
                 val.clone()
             } else {
                 expr.clone()
             }
         },
-        Expression::Function(fun) => Expression::Function(fun.clone()),
+        Expr::Function(fun) => Expr::Function(fun.clone()).into(),
     }
 }
 
@@ -361,7 +361,7 @@ fn apply_functions(
  * binding containing an inlined body. */
 fn apply_def_functions(
     def: &mut Definition,
-    bindings: &mut HashMap<VariableId, Expression>,
+    bindings: &mut HashMap<VariableId, TExpr>,
     gen: &mut VarGen,
 ) {
     let val = apply_functions(&mut def.0.1, bindings, gen);
@@ -386,44 +386,44 @@ pub fn apply_module_functions(
 /* Try to determine the internal structure of variables by unifying all patterns
  * with their corresponding expressions. */
 fn elaborate_variables(
-    expr: &Expression,
-    map: &mut HashMap<VariableId, Expression>,
+    expr: &TExpr,
+    map: &mut HashMap<VariableId, TExpr>,
     gen: &mut VarGen,
-) -> Expression {
-    match expr {
-        Expression::LetBinding(binding, body) => {
+) -> TExpr {
+    match &expr.v {
+        Expr::LetBinding(binding, body) => {
             let val = elaborate_variables(&*binding.1, map, gen);
             match_pattern_expr(&binding.0, &val, map, gen);
             elaborate_variables(body, map, gen)
         },
-        Expression::Sequence(seq) => {
+        Expr::Sequence(seq) => {
             let mut val = None;
             for expr in seq {
                 val = Some(elaborate_variables(expr, map, gen))
             }
             val.expect("encountered empty sequence")
         },
-        Expression::Product(prod) => {
+        Expr::Product(prod) => {
             let mut vals = vec![];
             for expr in prod {
                 vals.push(elaborate_variables(expr, map, gen));
             }
-            Expression::Product(vals)
+            Expr::Product(vals).into()
         },
-        Expression::Infix(op, expr1, expr2) => {
+        Expr::Infix(op, expr1, expr2) => {
             let expr1 = elaborate_variables(expr1, map, gen);
             let expr2 = elaborate_variables(expr2, map, gen);
-            Expression::Infix(*op, Box::new(expr1.clone()), Box::new(expr2.clone()))
+            Expr::Infix(*op, Box::new(expr1.clone()), Box::new(expr2.clone())).into()
         },
-        Expression::Negate(expr1) => {
-            Expression::Negate(Box::new(elaborate_variables(expr1, map, gen)))
+        Expr::Negate(expr1) => {
+            Expr::Negate(Box::new(elaborate_variables(expr1, map, gen))).into()
         },
-        Expression::Variable(var) if map.contains_key(&var.id) => {
+        Expr::Variable(var) if map.contains_key(&var.id) => {
             elaborate_variables(&map[&var.id].clone(), map, gen)
         },
-        Expression::Function(_) | Expression::Constant(_) |
-        Expression::Variable(_) => expr.clone(),
-        Expression::Application(_, _) => {
+        Expr::Function(_) | Expr::Constant(_) |
+        Expr::Variable(_) => expr.clone(),
+        Expr::Application(_, _) => {
             unreachable!("cannot elaborate variable values before inlining");
         }
     }
@@ -433,7 +433,7 @@ fn elaborate_variables(
  * with their corresponding expressions. */
 fn elaborate_def_variables(
     def: &Definition,
-    map: &mut HashMap<VariableId, Expression>,
+    map: &mut HashMap<VariableId, TExpr>,
     gen: &mut VarGen,
 ) {
     let val = elaborate_variables(&*def.0.1, map, gen);
@@ -444,7 +444,7 @@ fn elaborate_def_variables(
  * with their corresponding expressions. */
 pub fn elaborate_module_variables(
     module: &Module,
-    map: &mut HashMap<VariableId, Expression>,
+    map: &mut HashMap<VariableId, TExpr>,
     gen: &mut VarGen,
 ) {
     for def in &module.defs {
@@ -479,48 +479,48 @@ fn substitute_pattern_variables(
 
 /* Substitute variables into the expression according to the map. */
 fn substitute_expr_variables(
-    expr: &mut Expression,
+    expr: &mut TExpr,
     pat_map: &HashMap<VariableId, Pattern>,
-    expr_map: &HashMap<VariableId, Expression>,
+    expr_map: &HashMap<VariableId, TExpr>,
 ) {
-    match expr {
-        Expression::Variable(var) if expr_map.contains_key(&var.id) => {
+    match &mut expr.v {
+        Expr::Variable(var) if expr_map.contains_key(&var.id) => {
             *expr = expr_map[&var.id].clone();
             substitute_expr_variables(expr, pat_map, expr_map);
         },
-        Expression::Product(prod) => {
+        Expr::Product(prod) => {
             for expr in prod {
                 substitute_expr_variables(expr, pat_map, expr_map);
             }
         },
-        Expression::Sequence(seq) => {
+        Expr::Sequence(seq) => {
             for expr in seq {
                 substitute_expr_variables(expr, pat_map, expr_map);
             }
         },
-        Expression::Infix(_, expr1, expr2) => {
+        Expr::Infix(_, expr1, expr2) => {
             substitute_expr_variables(expr1, pat_map, expr_map);
             substitute_expr_variables(expr2, pat_map, expr_map);
         },
-        Expression::Application(expr1, expr2) => {
+        Expr::Application(expr1, expr2) => {
             substitute_expr_variables(expr1, pat_map, expr_map);
             substitute_expr_variables(expr2, pat_map, expr_map);
         },
-        Expression::Negate(expr1) => {
+        Expr::Negate(expr1) => {
             substitute_expr_variables(expr1, pat_map, expr_map);
         },
-        Expression::LetBinding(binding, body) => {
+        Expr::LetBinding(binding, body) => {
             substitute_expr_variables(&mut binding.1, pat_map, expr_map);
             substitute_pattern_variables(&mut binding.0, pat_map);
             substitute_expr_variables(body, pat_map, expr_map);
         },
-        Expression::Function(fun) => {
+        Expr::Function(fun) => {
             for pat in &mut fun.0 {
                 substitute_pattern_variables(pat, pat_map);
             }
             substitute_expr_variables(&mut fun.1, pat_map, expr_map);
         },
-        Expression::Variable(_) | Expression::Constant(_) => {}
+        Expr::Variable(_) | Expr::Constant(_) => {}
     }
 }
 
@@ -528,7 +528,7 @@ fn substitute_expr_variables(
 fn substitute_def_variables(
     def: &mut Definition,
     pat_map: &HashMap<VariableId, Pattern>,
-    expr_map: &HashMap<VariableId, Expression>,
+    expr_map: &HashMap<VariableId, TExpr>,
 ) {
     substitute_expr_variables(&mut *def.0.1, pat_map, expr_map);
     substitute_pattern_variables(&mut def.0.0, pat_map);
@@ -538,7 +538,7 @@ fn substitute_def_variables(
 pub fn substitute_module_variables(
     module: &mut Module,
     pat_map: &HashMap<VariableId, Pattern>,
-    expr_map: &HashMap<VariableId, Expression>,
+    expr_map: &HashMap<VariableId, TExpr>,
 ) {
     for def in &mut module.defs {
         substitute_def_variables(def, pat_map, expr_map);
@@ -551,27 +551,27 @@ pub fn substitute_module_variables(
 /* Generate a pattern that will match the given expression modulo the specific
  * constants inside it. */
 pub fn generate_pattern_exprs(
-    expr: &Expression,
-    map: &HashMap<VariableId, Expression>,
+    expr: &TExpr,
+    map: &HashMap<VariableId, TExpr>,
     gen: &mut VarGen,
     name: &Option<String>,
-) -> (Pattern, Expression) {
-    match expr {
-        Expression::Variable(var) if map.contains_key(&var.id) => {
+) -> (Pattern, TExpr) {
+    match &expr.v {
+        Expr::Variable(var) if map.contains_key(&var.id) => {
             generate_pattern_exprs(&map[&var.id], map, gen, name)
         },
-        Expression::Variable(_) => {
+        Expr::Variable(_) => {
             let mut new_var = Variable::new(gen.generate_id());
             new_var.name = name.clone();
-            (Pattern::Variable(new_var.clone()), Expression::Variable(new_var))
+            (Pattern::Variable(new_var.clone()), Expr::Variable(new_var).into())
         },
-        Expression::Function(_) | Expression::Infix(_, _, _) |
-        Expression::Constant(_) | Expression::Negate(_) => {
+        Expr::Function(_) | Expr::Infix(_, _, _) |
+        Expr::Constant(_) | Expr::Negate(_) => {
             let mut var = Variable::new(gen.generate_id());
             var.name = name.clone();
-            (Pattern::Variable(var.clone()), Expression::Variable(var))
+            (Pattern::Variable(var.clone()), Expr::Variable(var).into())
         },
-        Expression::Product(prod) => {
+        Expr::Product(prod) => {
             let mut pats = vec![];
             let mut exprs = vec![];
             for (idx, expr) in prod.iter().enumerate() {
@@ -580,7 +580,7 @@ pub fn generate_pattern_exprs(
                 pats.push(pat);
                 exprs.push(expr);
             }
-            (Pattern::Product(pats), Expression::Product(exprs))
+            (Pattern::Product(pats), Expr::Product(exprs).into())
         },
         _ => unreachable!("unexpected normalized expression"),
     }
@@ -610,46 +610,46 @@ pub fn collect_pattern_variables(
 
 /* Collect all the variables occuring in the given expression. */
 fn collect_expr_variables(
-    expr: &Expression,
+    expr: &TExpr,
     map: &mut HashMap<VariableId, Variable>,
 ) {
-    match expr {
-        Expression::Variable(var) => {
+    match &expr.v {
+        Expr::Variable(var) => {
             map.insert(var.id, var.clone());
         },
-        Expression::Sequence(seq) => {
+        Expr::Sequence(seq) => {
             for expr in seq {
                 collect_expr_variables(expr, map);
             }
         },
-        Expression::Product(prod) => {
+        Expr::Product(prod) => {
             for expr in prod {
                 collect_expr_variables(expr, map);
             }
         },
-        Expression::Infix(_, expr1, expr2) => {
+        Expr::Infix(_, expr1, expr2) => {
             collect_expr_variables(expr1, map);
             collect_expr_variables(expr2, map);
         },
-        Expression::Negate(expr1) => {
+        Expr::Negate(expr1) => {
             collect_expr_variables(expr1, map);
         },
-        Expression::Application(expr1, expr2) => {
+        Expr::Application(expr1, expr2) => {
             collect_expr_variables(expr1, map);
             collect_expr_variables(expr2, map);
         },
-        Expression::Function(fun) => {
+        Expr::Function(fun) => {
             for param in &fun.0 {
                 collect_pattern_variables(param, map);
             }
             collect_expr_variables(&*fun.1, map);
         },
-        Expression::LetBinding(binding, body) => {
+        Expr::LetBinding(binding, body) => {
             collect_expr_variables(&*binding.1, map);
             collect_pattern_variables(&binding.0, map);
             collect_expr_variables(body, map);
         },
-        Expression::Constant(_) => {},
+        Expr::Constant(_) => {},
     }
 }
 
@@ -676,24 +676,24 @@ pub fn collect_module_variables(
 }
 
 /* Replace all functions occuring in the given expression with 0-tuples. */
-fn unitize_expr_functions(expr: &mut Expression) {
-    match expr {
-        Expression::Function(_) => *expr = Expression::Product(vec![]),
-        Expression::Sequence(exprs) | Expression::Product(exprs) => {
+fn unitize_expr_functions(expr: &mut TExpr) {
+    match &mut expr.v {
+        Expr::Function(_) => *expr = Expr::Product(vec![]).into(),
+        Expr::Sequence(exprs) | Expr::Product(exprs) => {
             for expr in exprs {
                 unitize_expr_functions(expr);
             }
         },
-        Expression::Infix(_, expr1, expr2) | Expression::Application(expr1, expr2) => {
+        Expr::Infix(_, expr1, expr2) | Expr::Application(expr1, expr2) => {
             unitize_expr_functions(expr1);
             unitize_expr_functions(expr2);
         },
-        Expression::LetBinding(binding, body) => {
+        Expr::LetBinding(binding, body) => {
             unitize_expr_functions(&mut *binding.1);
             unitize_expr_functions(body);
         },
-        Expression::Negate(expr1) => unitize_expr_functions(expr1),
-        Expression::Constant(_) | Expression::Variable(_) => {}
+        Expr::Negate(expr1) => unitize_expr_functions(expr1),
+        Expr::Constant(_) | Expr::Variable(_) => {}
     }
 }
 
@@ -714,48 +714,48 @@ pub fn unitize_module_functions(module: &mut Module) {
 
 /* Produce the given binary operation making sure to do any straightforward
  * simplifications. */
-fn infix_op(op: InfixOp, e1: Expression, e2: Expression) -> Expression {
-    match (op, e1, e2) {
-        (InfixOp::Multiply, Expression::Constant(1), e2) => e2,
-        (InfixOp::Multiply, e1, Expression::Constant(1)) => e1,
-        (InfixOp::Multiply, e1 @ Expression::Constant(0), _) => e1,
-        (InfixOp::Multiply, _, e2 @ Expression::Constant(0)) => e2,
-        (InfixOp::Divide, e1, Expression::Constant(1)) => e1,
-        (InfixOp::Add, Expression::Constant(0), e2) => e2,
-        (InfixOp::Add, e1, Expression::Constant(0)) => e1,
-        (InfixOp::Subtract, e1, Expression::Constant(0)) => e1,
-        (op, e1, e2) => Expression::Infix(op, Box::new(e1), Box::new(e2))
+fn infix_op(op: InfixOp, e1: TExpr, e2: TExpr) -> TExpr {
+    match (op, &e1.v, &e2.v) {
+        (InfixOp::Multiply, Expr::Constant(1), _) => e2,
+        (InfixOp::Multiply, _, Expr::Constant(1)) => e1,
+        (InfixOp::Multiply, Expr::Constant(0), _) => e1,
+        (InfixOp::Multiply, _, Expr::Constant(0)) => e2,
+        (InfixOp::Divide, _, Expr::Constant(1)) => e1,
+        (InfixOp::Add, Expr::Constant(0), _) => e2,
+        (InfixOp::Add, _, Expr::Constant(0)) => e1,
+        (InfixOp::Subtract, _, Expr::Constant(0)) => e1,
+        (op, _, _) => Expr::Infix(op, Box::new(e1), Box::new(e2)).into()
     }
 }
 
 /* Flatten the given binding down into the set of constraints it defines. */
 fn flatten_binding(
     pat: &Pattern,
-    expr: &Expression,
+    expr: &TExpr,
     flattened: &mut Module,
 ) {
-    match (pat, expr) {
+    match (pat, &expr.v) {
         (pat @ Pattern::Variable(_),
-         expr @ (Expression::Variable(_) | Expression::Constant(_) |
-         Expression::Infix(_, _, _) | Expression::Negate(_))) => {
+         Expr::Variable(_) | Expr::Constant(_) |
+         Expr::Infix(_, _, _) | Expr::Negate(_)) => {
             flattened.defs.push(Definition(LetBinding(
                 pat.clone(),
                 Box::new(expr.clone()),
             )));
         },
         (Pattern::Constant(pat),
-         expr @ (Expression::Variable(_) | Expression::Constant(_) |
-                 Expression::Infix(_, _, _) | Expression::Negate(_))) => {
-            flattened.exprs.push(Expression::Infix(
+         Expr::Variable(_) | Expr::Constant(_) |
+                 Expr::Infix(_, _, _) | Expr::Negate(_)) => {
+            flattened.exprs.push(Expr::Infix(
                 InfixOp::Equal,
-                Box::new(Expression::Constant(*pat)),
+                Box::new(Expr::Constant(*pat).into()),
                 Box::new(expr.clone()),
-            ));
+            ).into());
         },
-        (Pattern::As(pat, _name), expr) => {
+        (Pattern::As(pat, _name), _) => {
             flatten_binding(pat, expr, flattened);
         },
-        (Pattern::Product(pats), Expression::Product(exprs)) => {
+        (Pattern::Product(pats), Expr::Product(exprs)) => {
             for (pat, expr) in pats.iter().zip(exprs.iter()) {
                 flatten_binding(pat, expr, flattened);
             }
@@ -766,25 +766,25 @@ fn flatten_binding(
 
 /* Flatten the given equality down into the set of constraints it defines. */
 fn flatten_equals(
-    expr1: &Expression,
-    expr2: &Expression,
+    expr1: &TExpr,
+    expr2: &TExpr,
     flattened: &mut Module,
 ) {
-    match (expr1, expr2) {
-        (Expression::Product(prod1), Expression::Product(prod2)) => {
+    match (&expr1.v, &expr2.v) {
+        (Expr::Product(prod1), Expr::Product(prod2)) => {
             for (expr1, expr2) in prod1.iter().zip(prod2.iter()) {
                 flatten_equals(expr1, expr2, flattened);
             }
         },
-        (expr1 @ (Expression::Variable(_) | Expression::Negate(_) |
-                  Expression::Infix(_, _, _) | Expression::Constant(_)),
-         expr2 @ (Expression::Variable(_) | Expression::Negate(_) |
-                  Expression::Infix(_, _, _) | Expression::Constant(_))) => {
-            flattened.exprs.push(Expression::Infix(
+        (Expr::Variable(_) | Expr::Negate(_) |
+         Expr::Infix(_, _, _) | Expr::Constant(_),
+         Expr::Variable(_) | Expr::Negate(_) |
+         Expr::Infix(_, _, _) | Expr::Constant(_)) => {
+            flattened.exprs.push(Expr::Infix(
                 InfixOp::Equal,
                 Box::new(expr1.clone()),
                 Box::new(expr2.clone())
-            ));
+            ).into());
         },
         _ => unreachable!("encountered unexpected equality: {} = {}", expr1, expr2),
     }
@@ -792,44 +792,44 @@ fn flatten_equals(
 
 /* Flatten the given expression down into the set of constraints it defines. */
 fn flatten_expression(
-    expr: &Expression,
+    expr: &TExpr,
     flattened: &mut Module,
-) -> Expression {
-    match expr {
-        Expression::Sequence(seq) => {
+) -> TExpr {
+    match &expr.v {
+        Expr::Sequence(seq) => {
             let mut val = None;
             for expr in seq {
                 val = Some(flatten_expression(expr, flattened));
             }
             val.expect("encountered empty sequence").clone()
         },
-        Expression::Infix(InfixOp::Equal, expr1, expr2) => {
+        Expr::Infix(InfixOp::Equal, expr1, expr2) => {
             let expr1 = flatten_expression(expr1, flattened);
             let expr2 = flatten_expression(expr2, flattened);
             flatten_equals(&expr1, &expr2, flattened);
-            Expression::Product(vec![])
+            Expr::Product(vec![]).into()
         },
-        Expression::Infix(op, expr1, expr2) => {
+        Expr::Infix(op, expr1, expr2) => {
             let expr1 = flatten_expression(expr1, flattened);
             let expr2 = flatten_expression(expr2, flattened);
-            Expression::Infix(*op, Box::new(expr1), Box::new(expr2))
+            Expr::Infix(*op, Box::new(expr1), Box::new(expr2)).into()
         },
-        Expression::Product(prod) => {
+        Expr::Product(prod) => {
             let mut exprs = vec![];
             for expr in prod {
                 exprs.push(flatten_expression(expr, flattened));
             }
-            Expression::Product(exprs)
+            Expr::Product(exprs).into()
         },
-        Expression::Negate(expr1) =>
-            Expression::Negate(Box::new(flatten_expression(expr1, flattened))),
-        Expression::Constant(_) | Expression::Variable(_) => expr.clone(),
-        Expression::LetBinding(binding, body) => {
+        Expr::Negate(expr1) =>
+            Expr::Negate(Box::new(flatten_expression(expr1, flattened))).into(),
+        Expr::Constant(_) | Expr::Variable(_) => expr.clone(),
+        Expr::LetBinding(binding, body) => {
             let val = flatten_expression(&*binding.1, flattened);
             flatten_binding(&binding.0, &val, flattened);
             flatten_expression(body, flattened)
         }
-        Expression::Function(_) | Expression::Application(_, _) =>
+        Expr::Function(_) | Expr::Application(_, _) =>
             unreachable!("functions must already by inlined and eliminated"),
     }
 }
@@ -859,12 +859,12 @@ pub fn flatten_module(
 /* Make an equality expression to constrain the values that satify the circuit.
  * Simultaneously also make a variable definition to enable provers to generate
  * the necessary auxiliary variables. */
-fn push_constraint_def(module: &mut Module, out: Pattern, expr: Expression) {
-    module.exprs.push(Expression::Infix(
+fn push_constraint_def(module: &mut Module, out: Pattern, expr: TExpr) {
+    module.exprs.push(Expr::Infix(
         InfixOp::Equal,
         Box::new(out.to_expr()),
         Box::new(expr.clone())
-    ));
+    ).into());
     module.defs.push(Definition(LetBinding(out, Box::new(expr))));
 }
 
@@ -873,27 +873,27 @@ fn push_constraint_def(module: &mut Module, out: Pattern, expr: Expression) {
  * term1 = -term2 or term1 = term2 OP term3 */
 fn flatten_expr_to_3ac(
     out: Option<Pattern>,
-    expr: &Expression,
+    expr: &TExpr,
     flattened: &mut Module,
     gen: &mut VarGen,
 ) -> Pattern {
-    match (out, expr) {
-        (None, Expression::Constant(val)) => Pattern::Constant(*val),
-        (None, Expression::Variable(var)) => Pattern::Variable(var.clone()),
+    match (out, &expr.v) {
+        (None, Expr::Constant(val)) => Pattern::Constant(*val),
+        (None, Expr::Variable(var)) => Pattern::Variable(var.clone()),
         (Some(pat),
-         Expression::Constant(_) | Expression::Variable(_)) => {
+         Expr::Constant(_) | Expr::Variable(_)) => {
             push_constraint_def(flattened, pat.clone(), expr.clone());
             pat
         },
-        (out, Expression::Negate(n)) => {
+        (out, Expr::Negate(n)) => {
             let out1_term = flatten_expr_to_3ac(None, n, flattened, gen);
-            let rhs = Expression::Negate(Box::new(out1_term.to_expr()));
+            let rhs = Expr::Negate(Box::new(out1_term.to_expr()));
             let out_var = Variable::new(gen.generate_id());
             let out = out.unwrap_or(Pattern::Variable(out_var.clone()));
-            push_constraint_def(flattened, out.clone(), rhs);
+            push_constraint_def(flattened, out.clone(), rhs.into());
             out
         },
-        (out, Expression::Infix(op, e1, e2)) => {
+        (out, Expr::Infix(op, e1, e2)) => {
             let out1_term = flatten_expr_to_3ac(None, e1, flattened, gen);
             let out2_term = flatten_expr_to_3ac(None, e2, flattened, gen);
             let rhs = infix_op(
@@ -930,13 +930,13 @@ pub fn flatten_module_to_3ac(
         flatten_def_to_3ac(def, flattened, gen);
     }
     for expr in &module.exprs {
-        if let Expression::Infix(InfixOp::Equal, lhs, rhs) = expr {
+        if let Expr::Infix(InfixOp::Equal, lhs, rhs) = &expr.v {
             // Flatten this equality constraint into a series of definitions.
             // The last inserted definition is always an encoding of an equality
             // constraint.
-            match (&**lhs, &**rhs) {
-                (Expression::Variable(var), ohs) |
-                (ohs, Expression::Variable(var)) => {
+            match (lhs, &lhs.v, rhs, &rhs.v) {
+                (_, Expr::Variable(var), ohs, _) |
+                (ohs, _, _, Expr::Variable(var)) => {
                     flatten_expr_to_3ac(
                         Some(Pattern::Variable(var.clone())),
                         ohs,
@@ -944,8 +944,8 @@ pub fn flatten_module_to_3ac(
                         gen
                     );
                 },
-                (Expression::Constant(val), ohs) |
-                (ohs, Expression::Constant(val)) => {
+                (_, Expr::Constant(val), ohs, _) |
+                (ohs, _, _, Expr::Constant(val)) => {
                     flatten_expr_to_3ac(
                         Some(Pattern::Constant(*val)),
                         ohs,
@@ -953,7 +953,7 @@ pub fn flatten_module_to_3ac(
                         gen
                     );
                 },
-                (lhs, rhs) => {
+                (_, _, _, _) => {
                     let lhs = flatten_expr_to_3ac(None, lhs, flattened, gen);
                     let rhs = flatten_expr_to_3ac(None, rhs, flattened, gen);
                     flatten_expr_to_3ac(
@@ -1001,8 +1001,8 @@ pub fn compile(mut module: Module) -> Module {
     let mut expr_map = HashMap::new();
     let mut pat_map = HashMap::new();
     for (var, expr) in &map {
-        if let Expression::Function(_) = expr {
-            expr_map.insert(*var, Expression::Product(vec![]));
+        if let Expr::Function(_) = expr.v {
+            expr_map.insert(*var, Expr::Product(vec![]).into());
             pat_map.insert(*var, Pattern::Product(vec![]));
         }
     }

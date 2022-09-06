@@ -1,4 +1,4 @@
-use crate::ast::{Module, VariableId, Expression, InfixOp, Pattern};
+use crate::ast::{Module, VariableId, TExpr, InfixOp, Pattern, Expr};
 use crate::transform::collect_module_variables;
 use ark_ff::PrimeField;
 use ark_ec::TEModelParameters;
@@ -18,25 +18,25 @@ fn make_constant<F: PrimeField>(c: i32) -> F {
 }
 
 /* Evaluate the given expression sourcing any variables from the given map. */
-fn evaluate_expr(expr: &Expression, defs: &mut HashMap<VariableId, Expression>) -> i32 {
-    match expr {
-        Expression::Constant(c) => *c,
-        Expression::Variable(v) => {
+fn evaluate_expr(expr: &TExpr, defs: &mut HashMap<VariableId, TExpr>) -> i32 {
+    match &expr.v {
+        Expr::Constant(c) => *c,
+        Expr::Variable(v) => {
             let val = evaluate_expr(&defs[&v.id].clone(), defs);
-            defs.insert(v.id, Expression::Constant(val));
+            defs.insert(v.id, Expr::Constant(val).into());
             val
         },
-        Expression::Negate(e) => -evaluate_expr(e, defs),
-        Expression::Infix(InfixOp::Add, a, b) =>
+        Expr::Negate(e) => -evaluate_expr(e, defs),
+        Expr::Infix(InfixOp::Add, a, b) =>
             evaluate_expr(&a, defs) +
             evaluate_expr(&b, defs),
-        Expression::Infix(InfixOp::Subtract, a, b) =>
+        Expr::Infix(InfixOp::Subtract, a, b) =>
             evaluate_expr(&a, defs) -
             evaluate_expr(&b, defs),
-        Expression::Infix(InfixOp::Multiply, a, b) =>
+        Expr::Infix(InfixOp::Multiply, a, b) =>
             evaluate_expr(&a, defs) *
             evaluate_expr(&b, defs),
-        Expression::Infix(InfixOp::Divide, a, b) =>
+        Expr::Infix(InfixOp::Divide, a, b) =>
             evaluate_expr(&a, defs) /
             evaluate_expr(&b, defs),
         _ => unreachable!("encountered unexpected expression: {}", expr),
@@ -81,11 +81,11 @@ where
             }
         }
         for (var, value) in &var_assignments {
-            definitions.insert(*var, Expression::Constant(*value));
+            definitions.insert(*var, Expr::Constant(*value).into());
         }
         // Start deriving witnesses
         for (var, value) in &mut self.variable_map {
-            let var_expr = Expression::Variable(crate::ast::Variable::new(*var));
+            let var_expr = Expr::Variable(crate::ast::Variable::new(*var)).into();
             let expr_val = evaluate_expr(&var_expr, &mut definitions);
             *value = make_constant(expr_val);
         }
@@ -109,13 +109,13 @@ where
         }
         let zero = composer.zero_var();
         for expr in &self.module.exprs {
-            if let Expression::Infix(InfixOp::Equal, lhs, rhs) = expr {
-                match (&**lhs, &**rhs) {
+            if let Expr::Infix(InfixOp::Equal, lhs, rhs) = &expr.v {
+                match (&lhs.v, &rhs.v) {
                     // Variables on the LHS
                     // v1 = v2
                     (
-                        Expression::Variable(v1),
-                        Expression::Variable(v2),
+                        Expr::Variable(v1),
+                        Expr::Variable(v2),
                     ) => {
                         composer.arithmetic_gate(|gate| {
                             gate.witness(inputs[&v1.id], inputs[&v2.id], Some(zero))
@@ -124,8 +124,8 @@ where
                     },
                     // v1 = c2
                     (
-                        Expression::Variable(v1),
-                        Expression::Constant(c2),
+                        Expr::Variable(v1),
+                        Expr::Constant(c2),
                     ) => {
                         composer.arithmetic_gate(|gate| {
                             gate.witness(inputs[&v1.id], zero, Some(zero))
@@ -135,9 +135,9 @@ where
                     },
                     // v1 = -c2
                     (
-                        Expression::Variable(v1),
-                        Expression::Negate(e2),
-                    ) if matches!(&**e2, Expression::Constant(c2) if {
+                        Expr::Variable(v1),
+                        Expr::Negate(e2),
+                    ) if matches!(&e2.v, Expr::Constant(c2) if {
                         composer.arithmetic_gate(|gate| {
                             gate.witness(inputs[&v1.id], zero, Some(zero))
                                 .add(F::one(), F::zero())
@@ -147,9 +147,9 @@ where
                     }) => {},
                     // v1 = -v2
                     (
-                        Expression::Variable(v1),
-                        Expression::Negate(e2),
-                    ) if matches!(&**e2, Expression::Variable(v2) if {
+                        Expr::Variable(v1),
+                        Expr::Negate(e2),
+                    ) if matches!(&e2.v, Expr::Variable(v2) if {
                         composer.arithmetic_gate(|gate| {
                             gate.witness(inputs[&v1.id], inputs[&v2.id], Some(zero))
                                 .add(F::one(), F::one())
@@ -158,11 +158,11 @@ where
                     }) => {},
                     // v1 = c2 + c3
                     (
-                        Expression::Variable(v1),
-                        Expression::Infix(InfixOp::Add, e2, e3),
-                    ) if matches!((&**e2, &**e3), (
-                        Expression::Constant(c2),
-                        Expression::Constant(c3),
+                        Expr::Variable(v1),
+                        Expr::Infix(InfixOp::Add, e2, e3),
+                    ) if matches!((&e2.v, &e3.v), (
+                        Expr::Constant(c2),
+                        Expr::Constant(c3),
                     ) if {
                         composer.arithmetic_gate(|gate| {
                             gate.witness(inputs[&v1.id], zero, Some(zero))
@@ -173,11 +173,11 @@ where
                     }) => {},
                     // v1 = v2 + c3
                     (
-                        Expression::Variable(v1),
-                        Expression::Infix(InfixOp::Add, e2, e3),
-                    ) if matches!((&**e2, &**e3), (
-                        Expression::Variable(v2),
-                        Expression::Constant(c3),
+                        Expr::Variable(v1),
+                        Expr::Infix(InfixOp::Add, e2, e3),
+                    ) if matches!((&e2.v, &e3.v), (
+                        Expr::Variable(v2),
+                        Expr::Constant(c3),
                     ) if {
                         composer.arithmetic_gate(|gate| {
                             gate.witness(inputs[&v1.id], inputs[&v2.id], Some(zero))
@@ -188,11 +188,11 @@ where
                     }) => {},
                     // v1 = c2 + v3
                     (
-                        Expression::Variable(v1),
-                        Expression::Infix(InfixOp::Add, e2, e3),
-                    ) if matches!((&**e2, &**e3), (
-                        Expression::Constant(c2),
-                        Expression::Variable(v3),
+                        Expr::Variable(v1),
+                        Expr::Infix(InfixOp::Add, e2, e3),
+                    ) if matches!((&e2.v, &e3.v), (
+                        Expr::Constant(c2),
+                        Expr::Variable(v3),
                     ) if {
                         composer.arithmetic_gate(|gate| {
                             gate.witness(inputs[&v1.id], inputs[&v3.id], Some(zero))
@@ -203,11 +203,11 @@ where
                     }) => {},
                     // v1 = v2 + v3
                     (
-                        Expression::Variable(v1),
-                        Expression::Infix(InfixOp::Add, e2, e3),
-                    ) if matches!((&**e2, &**e3), (
-                        Expression::Variable(v2),
-                        Expression::Variable(v3),
+                        Expr::Variable(v1),
+                        Expr::Infix(InfixOp::Add, e2, e3),
+                    ) if matches!((&e2.v, &e3.v), (
+                        Expr::Variable(v2),
+                        Expr::Variable(v3),
                     ) if {
                         composer.arithmetic_gate(|gate| {
                             gate.witness(inputs[&v1.id], inputs[&v2.id], Some(inputs[&v3.id]))
@@ -218,11 +218,11 @@ where
                     }) => {},
                     // v1 = c2 - c3
                     (
-                        Expression::Variable(v1),
-                        Expression::Infix(InfixOp::Subtract, e2, e3),
-                    ) if matches!((&**e2, &**e3), (
-                        Expression::Constant(c2),
-                        Expression::Constant(c3),
+                        Expr::Variable(v1),
+                        Expr::Infix(InfixOp::Subtract, e2, e3),
+                    ) if matches!((&e2.v, &e3.v), (
+                        Expr::Constant(c2),
+                        Expr::Constant(c3),
                     ) if {
                         composer.arithmetic_gate(|gate| {
                             gate.witness(inputs[&v1.id], zero, Some(zero))
@@ -233,11 +233,11 @@ where
                     }) => {},
                     // v1 = v2 - c3
                     (
-                        Expression::Variable(v1),
-                        Expression::Infix(InfixOp::Subtract, e2, e3),
-                    ) if matches!((&**e2, &**e3), (
-                        Expression::Variable(v2),
-                        Expression::Constant(c3),
+                        Expr::Variable(v1),
+                        Expr::Infix(InfixOp::Subtract, e2, e3),
+                    ) if matches!((&e2.v, &e3.v), (
+                        Expr::Variable(v2),
+                        Expr::Constant(c3),
                     ) if {
                         composer.arithmetic_gate(|gate| {
                             gate.witness(inputs[&v1.id], inputs[&v2.id], Some(zero))
@@ -248,11 +248,11 @@ where
                     }) => {},
                     // v1 = c2 - v3
                     (
-                        Expression::Variable(v1),
-                        Expression::Infix(InfixOp::Subtract, e2, e3),
-                    ) if matches!((&**e2, &**e3), (
-                        Expression::Constant(c2),
-                        Expression::Variable(v3),
+                        Expr::Variable(v1),
+                        Expr::Infix(InfixOp::Subtract, e2, e3),
+                    ) if matches!((&e2.v, &e3.v), (
+                        Expr::Constant(c2),
+                        Expr::Variable(v3),
                     ) if {
                         composer.arithmetic_gate(|gate| {
                             gate.witness(inputs[&v1.id], inputs[&v3.id], Some(zero))
@@ -263,11 +263,11 @@ where
                     }) => {},
                     // v1 = v2 - v3
                     (
-                        Expression::Variable(v1),
-                        Expression::Infix(InfixOp::Subtract, e2, e3),
-                    ) if matches!((&**e2, &**e3), (
-                        Expression::Variable(v2),
-                        Expression::Variable(v3),
+                        Expr::Variable(v1),
+                        Expr::Infix(InfixOp::Subtract, e2, e3),
+                    ) if matches!((&e2.v, &e3.v), (
+                        Expr::Variable(v2),
+                        Expr::Variable(v3),
                     ) if {
                         composer.arithmetic_gate(|gate| {
                             gate.witness(inputs[&v1.id], inputs[&v2.id], Some(inputs[&v3.id]))
@@ -278,11 +278,11 @@ where
                     }) => {},
                     // v1 = c2 / c3
                     (
-                        Expression::Variable(v1),
-                        Expression::Infix(InfixOp::Divide, e2, e3),
-                    ) if matches!((&**e2, &**e3), (
-                        Expression::Constant(c2),
-                        Expression::Constant(c3),
+                        Expr::Variable(v1),
+                        Expr::Infix(InfixOp::Divide, e2, e3),
+                    ) if matches!((&e2.v, &e3.v), (
+                        Expr::Constant(c2),
+                        Expr::Constant(c3),
                     ) if {
                         let op1: F = make_constant(*c2);
                         let op2: F = make_constant(*c3);
@@ -295,11 +295,11 @@ where
                     }) => {},
                     // v1 = v2 / c3
                     (
-                        Expression::Variable(v1),
-                        Expression::Infix(InfixOp::Divide, e2, e3),
-                    ) if matches!((&**e2, &**e3), (
-                        Expression::Variable(v2),
-                        Expression::Constant(c3),
+                        Expr::Variable(v1),
+                        Expr::Infix(InfixOp::Divide, e2, e3),
+                    ) if matches!((&e2.v, &e3.v), (
+                        Expr::Variable(v2),
+                        Expr::Constant(c3),
                     ) if {
                         let op2: F = make_constant(*c3);
                         composer.arithmetic_gate(|gate| {
@@ -310,11 +310,11 @@ where
                     }) => {},
                     // v1 = c2 / v3 ***
                     (
-                        Expression::Variable(v1),
-                        Expression::Infix(InfixOp::Divide, e2, e3),
-                    ) if matches!((&**e2, &**e3), (
-                        Expression::Constant(c2),
-                        Expression::Variable(v3),
+                        Expr::Variable(v1),
+                        Expr::Infix(InfixOp::Divide, e2, e3),
+                    ) if matches!((&e2.v, &e3.v), (
+                        Expr::Constant(c2),
+                        Expr::Variable(v3),
                     ) if {
                         let op1: F = make_constant(*c2);
                         composer.arithmetic_gate(|gate| {
@@ -326,11 +326,11 @@ where
                     }) => {},
                     // v1 = v2 / v3 ***
                     (
-                        Expression::Variable(v1),
-                        Expression::Infix(InfixOp::Divide, e2, e3),
-                    ) if matches!((&**e2, &**e3), (
-                        Expression::Variable(v2),
-                        Expression::Variable(v3),
+                        Expr::Variable(v1),
+                        Expr::Infix(InfixOp::Divide, e2, e3),
+                    ) if matches!((&e2.v, &e3.v), (
+                        Expr::Variable(v2),
+                        Expr::Variable(v3),
                     ) if {
                         composer.arithmetic_gate(|gate| {
                             gate.witness(inputs[&v1.id], inputs[&v3.id], Some(inputs[&v2.id]))
@@ -341,11 +341,11 @@ where
                     }) => {},
                     // v1 = c2 * c3
                     (
-                        Expression::Variable(v1),
-                        Expression::Infix(InfixOp::Multiply, e2, e3),
-                    ) if matches!((&**e2, &**e3), (
-                        Expression::Constant(c2),
-                        Expression::Constant(c3),
+                        Expr::Variable(v1),
+                        Expr::Infix(InfixOp::Multiply, e2, e3),
+                    ) if matches!((&e2.v, &e3.v), (
+                        Expr::Constant(c2),
+                        Expr::Constant(c3),
                     ) if {
                         let op1: F = make_constant(*c2);
                         let op2: F = make_constant(*c3);
@@ -358,11 +358,11 @@ where
                     }) => {},
                     // v1 = v2 * c3
                     (
-                        Expression::Variable(v1),
-                        Expression::Infix(InfixOp::Multiply, e2, e3),
-                    ) if matches!((&**e2, &**e3), (
-                        Expression::Variable(v2),
-                        Expression::Constant(c3),
+                        Expr::Variable(v1),
+                        Expr::Infix(InfixOp::Multiply, e2, e3),
+                    ) if matches!((&e2.v, &e3.v), (
+                        Expr::Variable(v2),
+                        Expr::Constant(c3),
                     ) if {
                         let op2: F = make_constant(*c3);
                         composer.arithmetic_gate(|gate| {
@@ -373,11 +373,11 @@ where
                     }) => {},
                     // v1 = c2 * v3
                     (
-                        Expression::Variable(v1),
-                        Expression::Infix(InfixOp::Multiply, e2, e3),
-                    ) if matches!((&**e2, &**e3), (
-                        Expression::Constant(c2),
-                        Expression::Variable(v3),
+                        Expr::Variable(v1),
+                        Expr::Infix(InfixOp::Multiply, e2, e3),
+                    ) if matches!((&e2.v, &e3.v), (
+                        Expr::Constant(c2),
+                        Expr::Variable(v3),
                     ) if {
                         let op2: F = make_constant(*c2);
                         composer.arithmetic_gate(|gate| {
@@ -388,11 +388,11 @@ where
                     }) => {},
                     // v1 = v2 * v3
                     (
-                        Expression::Variable(v1),
-                        Expression::Infix(InfixOp::Multiply, e2, e3),
-                    ) if matches!((&**e2, &**e3), (
-                        Expression::Variable(v2),
-                        Expression::Variable(v3),
+                        Expr::Variable(v1),
+                        Expr::Infix(InfixOp::Multiply, e2, e3),
+                    ) if matches!((&e2.v, &e3.v), (
+                        Expr::Variable(v2),
+                        Expr::Variable(v3),
                     ) if {
                         composer.arithmetic_gate(|gate| {
                             gate.witness(inputs[&v2.id], inputs[&v3.id], Some(inputs[&v1.id]))
@@ -404,8 +404,8 @@ where
                     // Now for constants on the LHS
                     // c1 = v2
                     (
-                        Expression::Constant(c1),
-                        Expression::Variable(v2),
+                        Expr::Constant(c1),
+                        Expr::Variable(v2),
                     ) => {
                         composer.arithmetic_gate(|gate| {
                             gate.witness(inputs[&v2.id], zero, Some(zero))
@@ -415,8 +415,8 @@ where
                     },
                     // c1 = c2
                     (
-                        Expression::Constant(c1),
-                        Expression::Constant(c2),
+                        Expr::Constant(c1),
+                        Expr::Constant(c2),
                     ) => {
                         composer.arithmetic_gate(|gate| {
                             gate.witness(zero, zero, Some(zero))
@@ -426,9 +426,9 @@ where
                     },
                     // c1 = -c2
                     (
-                        Expression::Constant(c1),
-                        Expression::Negate(e2),
-                    ) if matches!(&**e2, Expression::Constant(c2) if {
+                        Expr::Constant(c1),
+                        Expr::Negate(e2),
+                    ) if matches!(&e2.v, Expr::Constant(c2) if {
                         composer.arithmetic_gate(|gate| {
                             gate.witness(zero, zero, Some(zero))
                                 .add(F::zero(), F::zero())
@@ -438,9 +438,9 @@ where
                     }) => {},
                     // c1 = -v2
                     (
-                        Expression::Constant(c1),
-                        Expression::Negate(e2),
-                    ) if matches!(&**e2, Expression::Variable(v2) if {
+                        Expr::Constant(c1),
+                        Expr::Negate(e2),
+                    ) if matches!(&e2.v, Expr::Variable(v2) if {
                         composer.arithmetic_gate(|gate| {
                             gate.witness(inputs[&v2.id], zero, Some(zero))
                                 .add(F::one(), F::zero())
@@ -450,11 +450,11 @@ where
                     }) => {},
                     // c1 = c2 + c3
                     (
-                        Expression::Constant(c1),
-                        Expression::Infix(InfixOp::Add, e2, e3),
-                    ) if matches!((&**e2, &**e3), (
-                        Expression::Constant(c2),
-                        Expression::Constant(c3),
+                        Expr::Constant(c1),
+                        Expr::Infix(InfixOp::Add, e2, e3),
+                    ) if matches!((&e2.v, &e3.v), (
+                        Expr::Constant(c2),
+                        Expr::Constant(c3),
                     ) if {
                         composer.arithmetic_gate(|gate| {
                             gate.witness(zero, zero, Some(zero))
@@ -465,11 +465,11 @@ where
                     }) => {},
                     // c1 = v2 + c3
                     (
-                        Expression::Constant(c1),
-                        Expression::Infix(InfixOp::Add, e2, e3),
-                    ) if matches!((&**e2, &**e3), (
-                        Expression::Variable(v2),
-                        Expression::Constant(c3),
+                        Expr::Constant(c1),
+                        Expr::Infix(InfixOp::Add, e2, e3),
+                    ) if matches!((&e2.v, &e3.v), (
+                        Expr::Variable(v2),
+                        Expr::Constant(c3),
                     ) if {
                         composer.arithmetic_gate(|gate| {
                             gate.witness(inputs[&v2.id], zero, Some(zero))
@@ -480,11 +480,11 @@ where
                     }) => {},
                     // c1 = c2 + v3
                     (
-                        Expression::Constant(c1),
-                        Expression::Infix(InfixOp::Add, e2, e3),
-                    ) if matches!((&**e2, &**e3), (
-                        Expression::Constant(c2),
-                        Expression::Variable(v3),
+                        Expr::Constant(c1),
+                        Expr::Infix(InfixOp::Add, e2, e3),
+                    ) if matches!((&e2.v, &e3.v), (
+                        Expr::Constant(c2),
+                        Expr::Variable(v3),
                     ) if {
                         composer.arithmetic_gate(|gate| {
                             gate.witness(inputs[&v3.id], zero, Some(zero))
@@ -495,11 +495,11 @@ where
                     }) => {},
                     // c1 = v2 + v3
                     (
-                        Expression::Constant(c1),
-                        Expression::Infix(InfixOp::Add, e2, e3),
-                    ) if matches!((&**e2, &**e3), (
-                        Expression::Variable(v2),
-                        Expression::Variable(v3),
+                        Expr::Constant(c1),
+                        Expr::Infix(InfixOp::Add, e2, e3),
+                    ) if matches!((&e2.v, &e3.v), (
+                        Expr::Variable(v2),
+                        Expr::Variable(v3),
                     ) if {
                         composer.arithmetic_gate(|gate| {
                             gate.witness(inputs[&v2.id], inputs[&v3.id], Some(zero))
@@ -510,11 +510,11 @@ where
                     }) => {},
                     // c1 = c2 - c3
                     (
-                        Expression::Constant(c1),
-                        Expression::Infix(InfixOp::Subtract, e2, e3),
-                    ) if matches!((&**e2, &**e3), (
-                        Expression::Constant(c2),
-                        Expression::Constant(c3),
+                        Expr::Constant(c1),
+                        Expr::Infix(InfixOp::Subtract, e2, e3),
+                    ) if matches!((&e2.v, &e3.v), (
+                        Expr::Constant(c2),
+                        Expr::Constant(c3),
                     ) if {
                         composer.arithmetic_gate(|gate| {
                             gate.witness(zero, zero, Some(zero))
@@ -525,11 +525,11 @@ where
                     }) => {},
                     // c1 = v2 - c3
                     (
-                        Expression::Constant(c1),
-                        Expression::Infix(InfixOp::Subtract, e2, e3),
-                    ) if matches!((&**e2, &**e3), (
-                        Expression::Variable(v2),
-                        Expression::Constant(c3),
+                        Expr::Constant(c1),
+                        Expr::Infix(InfixOp::Subtract, e2, e3),
+                    ) if matches!((&e2.v, &e3.v), (
+                        Expr::Variable(v2),
+                        Expr::Constant(c3),
                     ) if {
                         composer.arithmetic_gate(|gate| {
                             gate.witness(inputs[&v2.id], zero, Some(zero))
@@ -540,11 +540,11 @@ where
                     }) => {},
                     // c1 = c2 - v3
                     (
-                        Expression::Constant(c1),
-                        Expression::Infix(InfixOp::Subtract, e2, e3),
-                    ) if matches!((&**e2, &**e3), (
-                        Expression::Constant(c2),
-                        Expression::Variable(v3),
+                        Expr::Constant(c1),
+                        Expr::Infix(InfixOp::Subtract, e2, e3),
+                    ) if matches!((&e2.v, &e3.v), (
+                        Expr::Constant(c2),
+                        Expr::Variable(v3),
                     ) if {
                         composer.arithmetic_gate(|gate| {
                             gate.witness(inputs[&v3.id], zero, Some(zero))
@@ -555,11 +555,11 @@ where
                     }) => {},
                     // c1 = v2 - v3
                     (
-                        Expression::Constant(c1),
-                        Expression::Infix(InfixOp::Subtract, e2, e3),
-                    ) if matches!((&**e2, &**e3), (
-                        Expression::Variable(v2),
-                        Expression::Variable(v3),
+                        Expr::Constant(c1),
+                        Expr::Infix(InfixOp::Subtract, e2, e3),
+                    ) if matches!((&e2.v, &e3.v), (
+                        Expr::Variable(v2),
+                        Expr::Variable(v3),
                     ) if {
                         composer.arithmetic_gate(|gate| {
                             gate.witness(inputs[&v2.id], inputs[&v3.id], Some(zero))
@@ -570,11 +570,11 @@ where
                     }) => {},
                     // c1 = c2 / c3
                     (
-                        Expression::Constant(c1),
-                        Expression::Infix(InfixOp::Divide, e2, e3),
-                    ) if matches!((&**e2, &**e3), (
-                        Expression::Constant(c2),
-                        Expression::Constant(c3),
+                        Expr::Constant(c1),
+                        Expr::Infix(InfixOp::Divide, e2, e3),
+                    ) if matches!((&e2.v, &e3.v), (
+                        Expr::Constant(c2),
+                        Expr::Constant(c3),
                     ) if {
                         let op1: F = make_constant(*c1);
                         let op2: F = make_constant(*c2);
@@ -588,11 +588,11 @@ where
                     }) => {},
                     // c1 = v2 / c3
                     (
-                        Expression::Constant(c1),
-                        Expression::Infix(InfixOp::Divide, e2, e3),
-                    ) if matches!((&**e2, &**e3), (
-                        Expression::Variable(v2),
-                        Expression::Constant(c3),
+                        Expr::Constant(c1),
+                        Expr::Infix(InfixOp::Divide, e2, e3),
+                    ) if matches!((&e2.v, &e3.v), (
+                        Expr::Variable(v2),
+                        Expr::Constant(c3),
                     ) if {
                         let op1: F = make_constant(*c1);
                         let op3: F = make_constant(*c3);
@@ -605,11 +605,11 @@ where
                     }) => {},
                     // c1 = c2 / v3 ***
                     (
-                        Expression::Constant(c1),
-                        Expression::Infix(InfixOp::Divide, e2, e3),
-                    ) if matches!((&**e2, &**e3), (
-                        Expression::Constant(c2),
-                        Expression::Variable(v3),
+                        Expr::Constant(c1),
+                        Expr::Infix(InfixOp::Divide, e2, e3),
+                    ) if matches!((&e2.v, &e3.v), (
+                        Expr::Constant(c2),
+                        Expr::Variable(v3),
                     ) if {
                         let op1: F = make_constant(*c1);
                         let op2: F = make_constant(*c2);
@@ -621,11 +621,11 @@ where
                     }) => {},
                     // c1 = v2 / v3 ***
                     (
-                        Expression::Constant(c1),
-                        Expression::Infix(InfixOp::Divide, e2, e3),
-                    ) if matches!((&**e2, &**e3), (
-                        Expression::Variable(v2),
-                        Expression::Variable(v3),
+                        Expr::Constant(c1),
+                        Expr::Infix(InfixOp::Divide, e2, e3),
+                    ) if matches!((&e2.v, &e3.v), (
+                        Expr::Variable(v2),
+                        Expr::Variable(v3),
                     ) if {
                         let op1: F = make_constant(*c1);
                         composer.arithmetic_gate(|gate| {
@@ -636,11 +636,11 @@ where
                     }) => {},
                     // c1 = c2 * c3
                     (
-                        Expression::Constant(c1),
-                        Expression::Infix(InfixOp::Multiply, e2, e3),
-                    ) if matches!((&**e2, &**e3), (
-                        Expression::Constant(c2),
-                        Expression::Constant(c3),
+                        Expr::Constant(c1),
+                        Expr::Infix(InfixOp::Multiply, e2, e3),
+                    ) if matches!((&e2.v, &e3.v), (
+                        Expr::Constant(c2),
+                        Expr::Constant(c3),
                     ) if {
                         let op1: F = make_constant(*c1);
                         let op2: F = make_constant(*c2);
@@ -654,11 +654,11 @@ where
                     }) => {},
                     // c1 = v2 * c3
                     (
-                        Expression::Constant(c1),
-                        Expression::Infix(InfixOp::Multiply, e2, e3),
-                    ) if matches!((&**e2, &**e3), (
-                        Expression::Variable(v2),
-                        Expression::Constant(c3),
+                        Expr::Constant(c1),
+                        Expr::Infix(InfixOp::Multiply, e2, e3),
+                    ) if matches!((&e2.v, &e3.v), (
+                        Expr::Variable(v2),
+                        Expr::Constant(c3),
                     ) if {
                         let op1: F = make_constant(*c1);
                         let op3: F = make_constant(*c3);
@@ -671,11 +671,11 @@ where
                     }) => {},
                     // c1 = c2 * v3
                     (
-                        Expression::Constant(c1),
-                        Expression::Infix(InfixOp::Multiply, e2, e3),
-                    ) if matches!((&**e2, &**e3), (
-                        Expression::Constant(c2),
-                        Expression::Variable(v3),
+                        Expr::Constant(c1),
+                        Expr::Infix(InfixOp::Multiply, e2, e3),
+                    ) if matches!((&e2.v, &e3.v), (
+                        Expr::Constant(c2),
+                        Expr::Variable(v3),
                     ) if {
                         let op1: F = make_constant(*c1);
                         let op2: F = make_constant(*c2);
@@ -688,11 +688,11 @@ where
                     }) => {},
                     // c1 = v2 * v3
                     (
-                        Expression::Constant(c1),
-                        Expression::Infix(InfixOp::Multiply, e2, e3),
-                    ) if matches!((&**e2, &**e3), (
-                        Expression::Variable(v2),
-                        Expression::Variable(v3),
+                        Expr::Constant(c1),
+                        Expr::Infix(InfixOp::Multiply, e2, e3),
+                    ) if matches!((&e2.v, &e3.v), (
+                        Expr::Variable(v2),
+                        Expr::Variable(v3),
                     ) if {
                         let op1: F = make_constant(*c1);
                         composer.arithmetic_gate(|gate| {
