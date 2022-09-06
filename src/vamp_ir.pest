@@ -34,7 +34,7 @@ expr4 = { expr5 ~ ( &("+" | "-") ~ infixOp ~ expr5 )* }
 
 expr5 = { expr6 ~ ( &("*" | "/") ~ infixOp ~ expr6 )* }
 
-expr6 = { "(" ~ negate* ~ expr7 ~ ")" | expr7 }
+expr6 = { "(" ~ negate+ ~ expr7 ~ ")" | expr7 }
 
 expr7 = { expr8+ }
 
