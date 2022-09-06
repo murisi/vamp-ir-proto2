@@ -9,9 +9,7 @@ fn collect_expr_poly_vars(
     map: &mut HashMap<VariableId, Variable>,
 ) {
     match &expr.v {
-        Expr::Variable(var) => {
-            map.insert(var.id, var.clone());
-        },
+        Expr::Variable(_) => {},
         Expr::Sequence(seq) => {
             for expr in seq {
                 collect_expr_poly_vars(expr, map);

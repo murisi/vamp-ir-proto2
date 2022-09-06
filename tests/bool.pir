@@ -14,6 +14,6 @@ let map (f,m) (a,b,c,d) =
     f d;;
 
 map (bool 1,0) c;;
-//map (bool 1,0) c c;;
+map (bool 1,0) c;;
 
 fun f -> f a;;
