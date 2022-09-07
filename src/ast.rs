@@ -214,6 +214,26 @@ impl Pattern {
             }
         }
     }
+
+    pub fn to_typed_expr(&self, typ: Type) -> TExpr {
+        match (self, typ) {
+            (Self::Constant(val), typ) =>
+                TExpr { v: Expr::Constant(*val), t: Some(typ) },
+            (Self::Variable(var), typ) =>
+                TExpr { v:Expr::Variable(var.clone()), t: Some(typ) },
+            (Self::As(pat, _name), typ) => pat.to_typed_expr(typ),
+            (Self::Product(pats), Type::Product(types))
+                if pats.len() == types.len() =>
+            {
+                let mut exprs = vec![];
+                for (pat, typ) in pats.iter().zip(types.iter()) {
+                    exprs.push(pat.to_typed_expr(typ.clone()));
+                }
+                TExpr{v:Expr::Product(exprs), t: Some(Type::Product(types)) }
+            },
+            (_, typ) => panic!("expression {} cannot have the type {}", self, typ),
+        }
+    }
 }
 
 impl fmt::Display for Pattern {

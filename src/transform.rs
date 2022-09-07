@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use crate::typecheck::infer_module_types;
+use crate::typecheck::{infer_module_types, expand_module_variables};
 use crate::ast::{Module, Definition, TExpr, Pattern, VariableId, LetBinding, Variable, InfixOp, Expr};
 
 /* A structure for generating unique variable IDs. */
@@ -548,44 +548,6 @@ pub fn substitute_module_variables(
     }
 }
 
-/* Generate a pattern that will match the given expression modulo the specific
- * constants inside it. */
-pub fn generate_pattern_exprs(
-    expr: &TExpr,
-    map: &HashMap<VariableId, TExpr>,
-    gen: &mut VarGen,
-    name: &Option<String>,
-) -> (Pattern, TExpr) {
-    match &expr.v {
-        Expr::Variable(var) if map.contains_key(&var.id) => {
-            generate_pattern_exprs(&map[&var.id], map, gen, name)
-        },
-        Expr::Variable(_) => {
-            let mut new_var = Variable::new(gen.generate_id());
-            new_var.name = name.clone();
-            (Pattern::Variable(new_var.clone()), Expr::Variable(new_var).into())
-        },
-        Expr::Function(_) | Expr::Infix(_, _, _) |
-        Expr::Constant(_) | Expr::Negate(_) => {
-            let mut var = Variable::new(gen.generate_id());
-            var.name = name.clone();
-            (Pattern::Variable(var.clone()), Expr::Variable(var).into())
-        },
-        Expr::Product(prod) => {
-            let mut pats = vec![];
-            let mut exprs = vec![];
-            for (idx, expr) in prod.iter().enumerate() {
-                let inner_name = name.clone().map(|x| x + "." + &idx.to_string());
-                let (pat, expr) = generate_pattern_exprs(expr, map, gen, &inner_name);
-                pats.push(pat);
-                exprs.push(expr);
-            }
-            (Pattern::Product(pats), Expr::Product(exprs).into())
-        },
-        _ => unreachable!("unexpected normalized expression"),
-    }
-}
-
 /* Collect all the variables occuring in the given pattern. */
 pub fn collect_pattern_variables(
     pat: &Pattern,
@@ -978,23 +940,11 @@ pub fn flatten_module_to_3ac(
 pub fn compile(mut module: Module) -> Module {
     let mut vg = VarGen::new();
     number_module_variables(&mut module, &mut vg);
-    infer_module_types(&mut module, &mut vg);
+    infer_module_types(&mut module, &mut HashMap::new(), &mut vg);
     apply_module_functions(&mut module, &mut vg);
-    // Collect variable names for the variable we will create
-    let mut vars = HashMap::new();
-    collect_module_variables(&module, &mut vars);
-    // Expand all variables into their constituents
-    let mut map = HashMap::new();
-    elaborate_module_variables(&module, &mut map, &mut vg);
-    let mut expr_map = HashMap::new();
-    let mut pat_map = HashMap::new();
-    for (var, expr) in &map {
-        let name = vars.get(var).and_then(|x| x.name.clone());
-        let (pat, expr) = generate_pattern_exprs(&expr, &map, &mut vg, &name);
-        expr_map.insert(*var, expr);
-        pat_map.insert(*var, pat);
-    }
-    substitute_module_variables(&mut module, &pat_map, &expr_map);
+    let mut types = HashMap::new();
+    infer_module_types(&mut module, &mut types, &mut vg);
+    expand_module_variables(&mut module, &mut types, &mut vg);
     // Unitize all function variable expressions and patterns
     let mut map = HashMap::new();
     elaborate_module_variables(&module, &mut map, &mut vg);

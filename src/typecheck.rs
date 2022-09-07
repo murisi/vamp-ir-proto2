@@ -270,6 +270,23 @@ fn expand_type(
     }
 }
 
+/* Expand the given type until either it is no longer a variable or until there
+ * are no more available expansions. */
+fn partial_expand_type(
+    typ: &Type,
+    types: &HashMap<VariableId, Type>,
+) -> Type {
+    let mut typ = typ;
+    while let Type::Variable(var) = typ {
+        if let Some(inner) = types.get(&var.id) {
+            typ = inner;
+        } else {
+            break
+        }
+    }
+    typ.clone()
+}
+
 /* Consistently replace all type variables occuring in type expression with
  * fresh ones. Useful for let polymorphism. */
 fn refresh_type_vars(
@@ -457,16 +474,156 @@ fn infer_def_types(
 }
 
 /* Type check the module using Hindley Milner. */
-pub fn infer_module_types(annotated: &mut Module, gen: &mut VarGen) {
+pub fn infer_module_types(
+    annotated: &mut Module,
+    types: &mut HashMap<VariableId, Type>,
+    gen: &mut VarGen,
+) {
     allocate_module_types(annotated, gen);
-    let mut types = HashMap::new();
     let mut polymorphics = HashMap::new();
     collect_module_poly_vars(annotated, &mut polymorphics);
     let polymorphics: HashSet::<_> = polymorphics.into_keys().collect();
     for def in &mut annotated.defs {
-        infer_def_types(def, &polymorphics, &mut types, gen);
+        infer_def_types(def, &polymorphics, types, gen);
     }
     for expr in &mut annotated.exprs {
-        infer_expr_types(expr, &polymorphics, &mut types, gen);
+        infer_expr_types(expr, &polymorphics, types, gen);
+    }
+}
+
+/* Expand tuple pattern variables into tuple patterns. */
+fn expand_pattern_variables(
+    pat: &mut Pattern,
+    typ: &Type,
+    map: &mut HashMap<VariableId, Pattern>,
+    gen: &mut VarGen,
+) {
+    match (&mut *pat, typ) {
+        (Pattern::Variable(var), _) if map.contains_key(&var.id) => {
+            *pat = map[&var.id].clone();
+        },
+        (Pattern::Variable(var), Type::Product(prod)) => {
+            let mut new_pats = vec![];
+            for (idx, typ) in prod.iter().enumerate() {
+                let mut new_var = Variable::new(gen.generate_id());
+                new_var.name = var
+                    .name
+                    .as_ref()
+                    .map(|x| x.to_owned() + "." + &idx.to_string());
+                let mut var = Pattern::Variable(new_var);
+                expand_pattern_variables(&mut var, typ, map, gen);
+                new_pats.push(var);
+            }
+            let new_pat = Pattern::Product(new_pats);
+            map.insert(var.id, new_pat.clone());
+            *pat = new_pat;
+        },
+        (Pattern::Variable(_), _) => {},
+        (Pattern::Product(pats), Type::Product(types))
+            if pats.len() == types.len() =>
+        {
+            for (pat, typ) in pats.iter_mut().zip(types.iter()) {
+                expand_pattern_variables(pat, typ, map, gen);
+            }
+        },
+        (Pattern::Constant(_), Type::Int) => {},
+        (Pattern::As(_pat, _name), typ) => {
+            expand_pattern_variables(pat, typ, map, gen);
+        },
+        _ => panic!("pattern {} cannot have type {}", pat, typ),
+    }
+}
+
+/* Expand tuple expression variables into tuple expressions. */
+fn expand_variables(
+    expr: &mut TExpr,
+    map: &mut HashMap<VariableId, Pattern>,
+    types: &HashMap<VariableId, Type>,
+    gen: &mut VarGen,
+) {
+    match &mut expr.v {
+        Expr::LetBinding(binding, body) => {
+            expand_variables(&mut *binding.1, map, types, gen);
+            let typ = expand_type(binding.1.t.as_ref().unwrap(), types);
+            expand_pattern_variables(&mut binding.0, &typ, map, gen);
+            expand_variables(body, map, types, gen);
+        },
+        Expr::Sequence(seq) => {
+            for expr in seq {
+                expand_variables(expr, map, types, gen);
+            }
+        },
+        Expr::Product(prod) => {
+            for expr in prod {
+                expand_variables(expr, map, types, gen);
+            }
+        },
+        Expr::Infix(_, expr1, expr2) => {
+            expand_variables(expr1, map, types, gen);
+            expand_variables(expr2, map, types, gen);
+        },
+        Expr::Negate(expr1) => {
+            expand_variables(expr1, map, types, gen);
+        },
+        Expr::Variable(var) if map.contains_key(&var.id) => {
+            let typ = expand_type(expr.t.as_ref().unwrap(), types);
+            *expr = map[&var.id].to_typed_expr(typ);
+        },
+        Expr::Variable(var) if expr.t.is_some() => {
+            let partial_type = partial_expand_type(expr.t.as_ref().unwrap(), types);
+            if let Type::Product(prod) = partial_type {
+                let mut new_pats = vec![];
+                let mut new_exprs = vec![];
+                for (idx, typ) in prod.into_iter().enumerate() {
+                    let mut new_var = Variable::new(gen.generate_id());
+                    new_var.name = var
+                        .name
+                        .as_ref()
+                        .map(|x| x.to_owned() + "." + &idx.to_string());
+                    let var_pat = Pattern::Variable(new_var);
+                    let mut var_expr = var_pat.to_typed_expr(typ);
+                    expand_variables(&mut var_expr, map, types, gen);
+                    new_pats.push(var_pat);
+                    new_exprs.push(var_expr);
+                }
+                map.insert(var.id, Pattern::Product(new_pats));
+                *expr = TExpr{ v: Expr::Product(new_exprs), t: expr.t.clone() };
+            }
+        },
+        Expr::Function(fun) => {
+            expand_variables(&mut fun.1, map, types, gen);
+        },
+        Expr::Constant(_) | Expr::Variable(_) => {},
+        Expr::Application(expr1, expr2) => {
+            expand_variables(expr1, map, types, gen);
+            expand_variables(expr2, map, types, gen);
+        }
+    }
+}
+
+/* Expand tuple variables occuring in given definition into tuples. */
+fn expand_def_variables(
+    def: &mut Definition,
+    map: &mut HashMap<VariableId, Pattern>,
+    types: &mut HashMap<VariableId, Type>,
+    gen: &mut VarGen,
+) {
+    expand_variables(&mut *def.0.1, map, types, gen);
+    let typ = expand_type(def.0.1.t.as_ref().unwrap(), types);
+    expand_pattern_variables(&mut def.0.0, &typ, map, gen);
+}
+
+/* Expand tuple variables occuring in given module into tuples. */
+pub fn expand_module_variables(
+    module: &mut Module,
+    types: &mut HashMap<VariableId, Type>,
+    gen: &mut VarGen,
+) {
+    let mut pattern_map = HashMap::new();
+    for def in &mut module.defs {
+        expand_def_variables(def, &mut pattern_map, types, gen);
+    }
+    for expr in &mut module.exprs {
+        expand_variables(expr, &mut pattern_map, types, gen);
     }
 }
