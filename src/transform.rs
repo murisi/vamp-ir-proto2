@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use crate::typecheck::{infer_module_types, expand_module_variables};
+use crate::typecheck::{infer_module_types, expand_module_variables, unitize_module_functions};
 use crate::ast::{Module, Definition, TExpr, Pattern, VariableId, LetBinding, Variable, InfixOp, Expr};
 
 /* A structure for generating unique variable IDs. */
@@ -383,78 +383,6 @@ pub fn apply_module_functions(
     }
 }
 
-/* Try to determine the internal structure of variables by unifying all patterns
- * with their corresponding expressions. */
-fn elaborate_variables(
-    expr: &TExpr,
-    map: &mut HashMap<VariableId, TExpr>,
-    gen: &mut VarGen,
-) -> TExpr {
-    match &expr.v {
-        Expr::LetBinding(binding, body) => {
-            let val = elaborate_variables(&*binding.1, map, gen);
-            match_pattern_expr(&binding.0, &val, map, gen);
-            elaborate_variables(body, map, gen)
-        },
-        Expr::Sequence(seq) => {
-            let mut val = None;
-            for expr in seq {
-                val = Some(elaborate_variables(expr, map, gen))
-            }
-            val.expect("encountered empty sequence")
-        },
-        Expr::Product(prod) => {
-            let mut vals = vec![];
-            for expr in prod {
-                vals.push(elaborate_variables(expr, map, gen));
-            }
-            Expr::Product(vals).into()
-        },
-        Expr::Infix(op, expr1, expr2) => {
-            let expr1 = elaborate_variables(expr1, map, gen);
-            let expr2 = elaborate_variables(expr2, map, gen);
-            Expr::Infix(*op, Box::new(expr1.clone()), Box::new(expr2.clone())).into()
-        },
-        Expr::Negate(expr1) => {
-            Expr::Negate(Box::new(elaborate_variables(expr1, map, gen))).into()
-        },
-        Expr::Variable(var) if map.contains_key(&var.id) => {
-            elaborate_variables(&map[&var.id].clone(), map, gen)
-        },
-        Expr::Function(_) | Expr::Constant(_) |
-        Expr::Variable(_) => expr.clone(),
-        Expr::Application(_, _) => {
-            unreachable!("cannot elaborate variable values before inlining");
-        }
-    }
-}
-
-/* Try to determine the internal structure of variables by unifying all patterns
- * with their corresponding expressions. */
-fn elaborate_def_variables(
-    def: &Definition,
-    map: &mut HashMap<VariableId, TExpr>,
-    gen: &mut VarGen,
-) {
-    let val = elaborate_variables(&*def.0.1, map, gen);
-    match_pattern_expr(&def.0.0, &val, map, gen);
-}
-
-/* Try to determine the internal structure of variables by unifying all patterns
- * with their corresponding expressions. */
-pub fn elaborate_module_variables(
-    module: &Module,
-    map: &mut HashMap<VariableId, TExpr>,
-    gen: &mut VarGen,
-) {
-    for def in &module.defs {
-        elaborate_def_variables(def, map, gen);
-    }
-    for expr in &module.exprs {
-        elaborate_variables(expr, map, gen);
-    }
-}
-
 /* Substitute variables into the pattern according to the map. */
 fn substitute_pattern_variables(
     pat: &mut Pattern,
@@ -634,43 +562,6 @@ pub fn collect_module_variables(
     }
     for expr in &module.exprs {
         collect_expr_variables(expr, map);
-    }
-}
-
-/* Replace all functions occuring in the given expression with 0-tuples. */
-fn unitize_expr_functions(expr: &mut TExpr) {
-    match &mut expr.v {
-        Expr::Function(_) => *expr = Expr::Product(vec![]).into(),
-        Expr::Sequence(exprs) | Expr::Product(exprs) => {
-            for expr in exprs {
-                unitize_expr_functions(expr);
-            }
-        },
-        Expr::Infix(_, expr1, expr2) | Expr::Application(expr1, expr2) => {
-            unitize_expr_functions(expr1);
-            unitize_expr_functions(expr2);
-        },
-        Expr::LetBinding(binding, body) => {
-            unitize_expr_functions(&mut *binding.1);
-            unitize_expr_functions(body);
-        },
-        Expr::Negate(expr1) => unitize_expr_functions(expr1),
-        Expr::Constant(_) | Expr::Variable(_) => {}
-    }
-}
-
-/* Replace all functions occuring in the given definition with 0-tuples. */
-fn unitize_def_functions(def: &mut Definition) {
-    unitize_expr_functions(&mut *def.0.1);
-}
-
-/* Replace all functions occuring in the given module with 0-tuples. */
-pub fn unitize_module_functions(module: &mut Module) {
-    for def in &mut module.defs {
-        unitize_def_functions(def);
-    }
-    for expr in &mut module.exprs {
-        unitize_expr_functions(expr);
     }
 }
 
@@ -944,21 +835,10 @@ pub fn compile(mut module: Module) -> Module {
     apply_module_functions(&mut module, &mut vg);
     let mut types = HashMap::new();
     infer_module_types(&mut module, &mut types, &mut vg);
+    // Expand all tuple variables
     expand_module_variables(&mut module, &mut types, &mut vg);
-    // Unitize all function variable expressions and patterns
-    let mut map = HashMap::new();
-    elaborate_module_variables(&module, &mut map, &mut vg);
-    let mut expr_map = HashMap::new();
-    let mut pat_map = HashMap::new();
-    for (var, expr) in &map {
-        if let Expr::Function(_) = expr.v {
-            expr_map.insert(*var, Expr::Product(vec![]).into());
-            pat_map.insert(*var, Pattern::Product(vec![]));
-        }
-    }
-    substitute_module_variables(&mut module, &pat_map, &expr_map);
     // Unitize all function expressions
-    unitize_module_functions(&mut module);
+    unitize_module_functions(&mut module, &mut types);
     println!("{}\n", module);
     // Start generating arithmetic constraints
     let mut constraints = Module::default();

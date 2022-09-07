@@ -627,3 +627,122 @@ pub fn expand_module_variables(
         expand_variables(expr, &mut pattern_map, types, gen);
     }
 }
+
+/* Returns the given type with all function inner types are replaced by units.
+ */
+fn unitize_type_functions(
+    typ: Type,
+    types: &mut HashMap<VariableId, Type>,
+) -> Type {
+    match &typ {
+        Type::Int => typ,
+        Type::Variable(var) if types.contains_key(&var.id) => {
+            let res = unitize_type_functions(types[&var.id].clone(), types);
+            types.insert(var.id, res);
+            typ
+        }
+        Type::Variable(_) => typ,
+        Type::Function(_, _) => Type::Product(vec![]),
+        Type::Product(prod) => {
+            let mut inner_types = vec![];
+            for elt in prod {
+                inner_types.push(unitize_type_functions(elt.clone(), types));
+            }
+            Type::Product(inner_types)
+        },
+    }
+}
+
+/* Takes a pattern and its type. Returns a pattern where pattern variables
+ * corresponding to function types are replaced by units. */
+fn unitize_pattern_functions(
+    pat: Pattern,
+    typ: &Type,
+    types: &HashMap<VariableId, Type>,
+) -> Pattern {
+    match (pat, typ) {
+        (pat, Type::Variable(var)) if types.contains_key(&var.id) => {
+            unitize_pattern_functions(pat, &types[&var.id], types)
+        },
+        (Pattern::Variable(_), Type::Function(_, _)) => {
+            Pattern::Product(vec![])
+        },
+        (Pattern::As(inner_pat, name), _) => {
+            let inner_pat = unitize_pattern_functions(*inner_pat, typ, types);
+            Pattern::As(Box::new(inner_pat), name.clone())
+        },
+        (Pattern::Product(pats), Type::Product(typs))
+            if pats.len() == typs.len() =>
+        {
+            let mut new_pats = vec![];
+            for (ipat, ityp) in pats.into_iter().zip(typs.into_iter()) {
+                new_pats.push(unitize_pattern_functions(ipat, ityp, types));
+            }
+            Pattern::Product(new_pats)
+        },
+        (pat @ Pattern::Variable(_), Type::Variable(_)) => pat,
+        (pat @ (Pattern::Constant(_) | Pattern::Variable(_)), Type::Int) => pat,
+        (pat, typ) =>
+            panic!("pattern {} does not correspond to type {}", pat, typ),
+    }
+}
+
+/* Replace all functions occuring in the given expression with 0-tuples. */
+fn unitize_expr_functions(
+    expr: &mut TExpr,
+    types: &mut HashMap<VariableId, Type>,
+) {
+    match &mut expr.v {
+        Expr::Function(_) => {
+            expr.v = Expr::Product(vec![]);
+        },
+        Expr::Sequence(exprs) | Expr::Product(exprs) => {
+            for expr in exprs {
+                unitize_expr_functions(expr, types);
+            }
+        },
+        Expr::Infix(_, expr1, expr2) | Expr::Application(expr1, expr2) => {
+            unitize_expr_functions(expr1, types);
+            unitize_expr_functions(expr2, types);
+        },
+        Expr::LetBinding(binding, body) => {
+            let binding_type = binding.1.t.as_ref().unwrap();
+            binding.0 = unitize_pattern_functions(binding.0.clone(), binding_type, types);
+            unitize_expr_functions(&mut *binding.1, types);
+            unitize_expr_functions(body, types);
+        },
+        Expr::Negate(expr1) => unitize_expr_functions(expr1, types),
+        Expr::Constant(_) => {},
+        Expr::Variable(_) => {
+            let partial_type = expr.t.as_ref().map(|x| partial_expand_type(x, types));
+            if let Some(Type::Function(_, _)) = partial_type {
+                expr.v = Expr::Product(vec![]);
+            }
+        },
+    }
+    // Scrub functions from this expression's type
+    expr.t = expr.t.clone().map(|x| unitize_type_functions(x, types));
+}
+
+/* Replace all functions occuring in the given definition with 0-tuples. */
+fn unitize_def_functions(
+    def: &mut Definition,
+    types: &mut HashMap<VariableId, Type>,
+) {
+    let binding_type = def.0.1.t.as_ref().unwrap();
+    def.0.0 = unitize_pattern_functions(def.0.0.clone(), binding_type, types);
+    unitize_expr_functions(&mut *def.0.1, types);
+}
+
+/* Replace all functions occuring in the given module with 0-tuples. */
+pub fn unitize_module_functions(
+    module: &mut Module,
+    types: &mut HashMap<VariableId, Type>,
+) {
+    for def in &mut module.defs {
+        unitize_def_functions(def, types);
+    }
+    for expr in &mut module.exprs {
+        unitize_expr_functions(expr, types);
+    }
+}
