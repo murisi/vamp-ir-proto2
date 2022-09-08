@@ -17,28 +17,38 @@ fn make_constant<F: PrimeField>(c: i32) -> F {
     }
 }
 
-/* Evaluate the given expression sourcing any variables from the given map. */
-fn evaluate_expr(expr: &TExpr, defs: &mut HashMap<VariableId, TExpr>) -> i32 {
+/* Evaluate the given expression sourcing any variables from the given maps. */
+fn evaluate_expr<F>(
+    expr: &TExpr,
+    defs: &mut HashMap<VariableId, TExpr>,
+    assigns: &mut HashMap<VariableId, F>,
+) -> F where F: PrimeField {
     match &expr.v {
-        Expr::Constant(c) => *c,
+        Expr::Constant(c) => make_constant(*c),
         Expr::Variable(v) => {
-            let val = evaluate_expr(&defs[&v.id].clone(), defs);
-            defs.insert(v.id, Expr::Constant(val).into());
-            val
+            if let Some(val) = assigns.get(&v.id) {
+                // First look for existing variable assignment
+                *val
+            } else {
+                // Otherwise compute variable from first principles
+                let val = evaluate_expr(&defs[&v.id].clone(), defs, assigns);
+                assigns.insert(v.id, val);
+                val
+            }
         },
-        Expr::Negate(e) => -evaluate_expr(e, defs),
+        Expr::Negate(e) => -evaluate_expr(e, defs, assigns),
         Expr::Infix(InfixOp::Add, a, b) =>
-            evaluate_expr(&a, defs) +
-            evaluate_expr(&b, defs),
+            evaluate_expr(&a, defs, assigns) +
+            evaluate_expr(&b, defs, assigns),
         Expr::Infix(InfixOp::Subtract, a, b) =>
-            evaluate_expr(&a, defs) -
-            evaluate_expr(&b, defs),
+            evaluate_expr(&a, defs, assigns) -
+            evaluate_expr(&b, defs, assigns),
         Expr::Infix(InfixOp::Multiply, a, b) =>
-            evaluate_expr(&a, defs) *
-            evaluate_expr(&b, defs),
+            evaluate_expr(&a, defs, assigns) *
+            evaluate_expr(&b, defs, assigns),
         Expr::Infix(InfixOp::Divide, a, b) =>
-            evaluate_expr(&a, defs) /
-            evaluate_expr(&b, defs),
+            evaluate_expr(&a, defs, assigns) /
+            evaluate_expr(&b, defs, assigns),
         _ => unreachable!("encountered unexpected expression: {}", expr),
     }
 }
@@ -80,14 +90,15 @@ where
                 definitions.insert(var.id, *def.0.1.clone());
             }
         }
+        // Lift the variable assignments into the circuit's field
+        let mut field_assigns = HashMap::new();
         for (var, value) in &var_assignments {
-            definitions.insert(*var, Expr::Constant(*value).into());
+            field_assigns.insert(*var, make_constant::<F>(*value));
         }
         // Start deriving witnesses
         for (var, value) in &mut self.variable_map {
             let var_expr = Expr::Variable(crate::ast::Variable::new(*var)).into();
-            let expr_val = evaluate_expr(&var_expr, &mut definitions);
-            *value = make_constant(expr_val);
+            *value = evaluate_expr(&var_expr, &mut definitions, &mut field_assigns);
         }
     }
 }

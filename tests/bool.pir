@@ -17,3 +17,5 @@ map (bool 1,0) c;;
 map (bool 1,0) c;;
 
 fun f -> f a;;
+
+let h = 1/g;;
