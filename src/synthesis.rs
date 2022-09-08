@@ -81,7 +81,7 @@ where
     /* Populate input and auxilliary variables from the given program inputs. */
     pub fn populate_variables(
         &mut self,
-        var_assignments: HashMap<VariableId, i32>,
+        mut field_assigns: HashMap<VariableId, F>,
     ) {
         // Get the definitions necessary to populate auxiliary variables
         let mut definitions = HashMap::new();
@@ -89,11 +89,6 @@ where
             if let Pattern::Variable(var) = &def.0.0 {
                 definitions.insert(var.id, *def.0.1.clone());
             }
-        }
-        // Lift the variable assignments into the circuit's field
-        let mut field_assigns = HashMap::new();
-        for (var, value) in &var_assignments {
-            field_assigns.insert(*var, make_constant::<F>(*value));
         }
         // Start deriving witnesses
         for (var, value) in &mut self.variable_map {

@@ -20,9 +20,10 @@ use std::io::Write;
 use plonk_core::prelude::VerifierData;
 use crate::synthesis::PlonkModule;
 use plonk_core::circuit::Circuit;
+use ark_ff::PrimeField;
 
 /* Prompt for satisfying inputs to the given program. */
-fn prompt_inputs(annotated: &Module) -> HashMap<VariableId, i32> {
+fn prompt_inputs<F>(annotated: &Module) -> HashMap<VariableId, F> where F: PrimeField {
     let mut input_variables = HashMap::new();
     collect_module_variables(&annotated, &mut input_variables);
     // Defined variables should not be requested from user
@@ -41,7 +42,11 @@ fn prompt_inputs(annotated: &Module) -> HashMap<VariableId, i32> {
         std::io::stdin()
             .read_line(&mut input_line)
             .expect("failed to read input");
-        let x: i32 = input_line.trim().parse().expect("input not an integer");
+        let x: F = if let Ok(x) = input_line.trim().parse() {
+            x
+        } else {
+            panic!("input not an integer");
+        };
         var_assignments.insert(id, x);
     }
     var_assignments

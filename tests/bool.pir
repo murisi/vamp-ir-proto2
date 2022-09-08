@@ -18,4 +18,6 @@ map (bool 1,0) c;;
 
 fun f -> f a;;
 
-let h = 1/g;;
+//let h = 1/g;;
+
+h*j = 20;;
